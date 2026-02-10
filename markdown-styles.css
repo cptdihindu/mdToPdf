@@ -10,6 +10,39 @@
     line-height: 1.6;
 }
 
+/* Inline alignment helpers for Markdown/HTML */
+.float-right {
+    float: right;
+    display: inline-block;
+}
+
+.line-split {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+}
+
+.line-split .right {
+    margin-left: auto;
+    text-align: right;
+}
+
+/* Inline alignment helpers for Markdown/HTML */
+.float-right {
+    float: right;
+}
+
+.line-split {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+}
+
+.line-split .right {
+    margin-left: auto;
+    text-align: right;
+}
+
 /* Code blocks */
 pre {
     background: #2d2d2d;
@@ -161,3 +194,5 @@ h6:first-child,
 p:first-child {
     margin-top: 0;
 }
+
+

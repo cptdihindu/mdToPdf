@@ -22,7 +22,7 @@ python server.py
 
 Open:
 
-- `http://127.0.0.1:8000/`
+- `http://127.0.0.1:8010/`
 
 Now **Download PDF** will call `/api/pdf` and download a selectable-text PDF.
 If the server isn’t running, the app automatically falls back to `html2pdf`.

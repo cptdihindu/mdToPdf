@@ -9,6 +9,8 @@ const btnAbout = document.getElementById('btn-about');
 const btnFullscreen = document.getElementById('btn-fullscreen');
 const btnZoomIn = document.getElementById('btn-zoom-in');
 const btnZoomOut = document.getElementById('btn-zoom-out');
+const btnEditorZoomIn = document.getElementById('btn-editor-zoom-in');
+const btnEditorZoomOut = document.getElementById('btn-editor-zoom-out');
 const btnSaveMd = document.getElementById('btn-save-md');
 const btnSaveMdFs = document.getElementById('btn-save-md-fs');
 const btnDownloadFs = document.getElementById('btn-download-fs');
@@ -20,16 +22,54 @@ const toast = document.getElementById('toast');
 const cssInput = document.getElementById('css-input');
 const tabMarkdown = document.getElementById('tab-markdown');
 const tabCss = document.getElementById('tab-css');
+const editorContainer = document.querySelector('.editor-container');
+const editorDivider = document.getElementById('editor-divider');
+const editorWrapper = document.querySelector('.editor-wrapper');
 
 const STORAGE_KEYS = {
     markdown: 'md2pdf_content',
     pageNumbers: 'md2pdf_page_numbers',
     customCss: 'md2pdf_custom_css',
-    previewZoom: 'md2pdf_preview_zoom'
+    previewZoom: 'md2pdf_preview_zoom',
+    editorZoom: 'md2pdf_editor_zoom',
+    editorSplit: 'md2pdf_editor_split'
 };
 
 let defaultMarkdownCssText = '';
 let currentDocBaseName = 'document';
+let markdownEditor = null;
+let cssEditor = null;
+
+function isCodeMirrorInstance(target) {
+    return !!(target && typeof target.getDoc === 'function');
+}
+
+function getMarkdownValue() {
+    return markdownEditor ? markdownEditor.getValue() : markdownInput.value;
+}
+
+function setMarkdownValue(value) {
+    const nextValue = value || '';
+    if (markdownEditor) {
+        markdownEditor.setValue(nextValue);
+    } else {
+        markdownInput.value = nextValue;
+    }
+}
+
+function getCssValue() {
+    if (cssEditor) return cssEditor.getValue();
+    return (cssInput && typeof cssInput.value === 'string') ? cssInput.value : '';
+}
+
+function setCssValue(value) {
+    const nextValue = value || '';
+    if (cssEditor) {
+        cssEditor.setValue(nextValue);
+    } else if (cssInput) {
+        cssInput.value = nextValue;
+    }
+}
 
 function normalizeCss(css) {
     return String(css || '').replace(/\r\n/g, '\n').trim();
@@ -63,12 +103,11 @@ const EMBED_MARKER_START = '<!-- MD2PDF_CUSTOM_CSS\n';
 const EMBED_MARKER_END = '\nMD2PDF_CUSTOM_CSS -->';
 
 function getCustomCss() {
-    return (cssInput && typeof cssInput.value === 'string') ? cssInput.value : '';
+    return getCssValue();
 }
 
 function setCustomCss(value) {
-    if (!cssInput) return;
-    cssInput.value = value || '';
+    setCssValue(value || '');
     applyCustomCssToPreview();
 }
 
@@ -90,6 +129,12 @@ function applyCustomCssToPreview() {
 
 function resetTextareaView(textarea) {
     if (!textarea) return;
+    if (isCodeMirrorInstance(textarea)) {
+        const doc = textarea.getDoc();
+        doc.setCursor({ line: 0, ch: 0 });
+        textarea.scrollTo(0, 0);
+        return;
+    }
     try {
         textarea.selectionStart = 0;
         textarea.selectionEnd = 0;
@@ -104,6 +149,20 @@ function applyPageNumberVisibility() {
 }
 
 function wrapOrInsert(textarea, left, right) {
+    if (isCodeMirrorInstance(textarea)) {
+        const doc = textarea.getDoc();
+        const selected = doc.getSelection();
+        if (selected) {
+            doc.replaceSelection(`${left}${selected}${right}`);
+        } else {
+            const cursor = doc.getCursor();
+            doc.replaceRange(`${left}${right}`, cursor);
+            doc.setCursor({ line: cursor.line, ch: cursor.ch + left.length });
+        }
+        textarea.focus();
+        return;
+    }
+
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
     const value = textarea.value;
@@ -126,12 +185,41 @@ function wrapOrInsert(textarea, left, right) {
     }
 }
 
+function insertSnippet(textarea, snippet) {
+    if (isCodeMirrorInstance(textarea)) {
+        const doc = textarea.getDoc();
+        doc.replaceSelection(snippet, 'end');
+        textarea.focus();
+        return;
+    }
+
+    if (!document.execCommand('insertText', false, snippet)) {
+        const start = textarea.selectionStart;
+        const end = textarea.selectionEnd;
+        const value = textarea.value;
+        textarea.value = value.substring(0, start) + snippet + value.substring(end);
+        textarea.selectionStart = textarea.selectionEnd = start + snippet.length;
+    }
+}
+
 function setEditorTab(tab, shouldFocus = true) {
     if (!markdownInput || !cssInput || !tabMarkdown || !tabCss) return;
 
     const isMarkdown = tab === 'markdown';
     markdownInput.hidden = !isMarkdown;
     cssInput.hidden = isMarkdown;
+
+    if (markdownEditor) {
+        const mdWrapper = markdownEditor.getWrapperElement();
+        mdWrapper.style.display = isMarkdown ? 'block' : 'none';
+        if (isMarkdown) markdownEditor.refresh();
+    }
+
+    if (cssEditor) {
+        const cssWrapper = cssEditor.getWrapperElement();
+        cssWrapper.style.display = isMarkdown ? 'none' : 'block';
+        if (!isMarkdown) cssEditor.refresh();
+    }
 
     tabMarkdown.classList.toggle('active', isMarkdown);
     tabCss.classList.toggle('active', !isMarkdown);
@@ -140,8 +228,50 @@ function setEditorTab(tab, shouldFocus = true) {
 
     // Focus active editor for better UX (but skip on initial load to avoid scroll-to-caret jumps).
     if (shouldFocus) {
-        try { (isMarkdown ? markdownInput : cssInput).focus(); } catch { /* ignore */ }
+        try {
+            if (isMarkdown) {
+                (markdownEditor || markdownInput).focus();
+            } else {
+                (cssEditor || cssInput).focus();
+            }
+        } catch { /* ignore */ }
     }
+}
+
+function initCodeEditors() {
+    if (!window.CodeMirror || !markdownInput || !cssInput) return;
+
+    markdownEditor = CodeMirror.fromTextArea(markdownInput, {
+        mode: { name: 'markdown', html: true },
+        highlightFormatting: true,
+        lineNumbers: true,
+        lineWrapping: true,
+        theme: 'material-darker',
+        placeholder: markdownInput.getAttribute('placeholder') || ''
+    });
+
+    cssEditor = CodeMirror.fromTextArea(cssInput, {
+        mode: 'css',
+        lineNumbers: true,
+        lineWrapping: true,
+        theme: 'material-darker',
+        placeholder: cssInput.getAttribute('placeholder') || ''
+    });
+
+    markdownEditor.setOption('indentUnit', 4);
+    cssEditor.setOption('indentUnit', 4);
+
+    markdownEditor.addOverlay({
+        token: function (stream) {
+            if (stream.peek() === '<' && stream.match(/<[^>]+>/)) return 'tag';
+            if (stream.match(/\*\*[^*]+?\*\*/)) return 'strong';
+            if (stream.match(/__[^_]+?__/)) return 'strong';
+            if (stream.match(/\*[^*]+?\*\*/)) return 'em';
+            if (stream.match(/_[^_]+?_/)) return 'em';
+            stream.next();
+            return null;
+        }
+    });
 }
 
 function embedCustomCssIntoMarkdown(markdown, css) {
@@ -191,7 +321,7 @@ function downloadTextFile(filename, content) {
 }
 
 function saveMarkdownFile() {
-    const content = embedCustomCssIntoMarkdown(markdownInput.value, getCustomCss());
+    const content = embedCustomCssIntoMarkdown(getMarkdownValue(), getCustomCss());
     const suggested = (currentDocBaseName || 'document').trim() || 'document';
     const entered = prompt('Save as (without extension):', suggested);
     if (entered === null) return; // cancelled
@@ -199,6 +329,15 @@ function saveMarkdownFile() {
     currentDocBaseName = base;
     downloadTextFile(`${base}.md`, content);
     showToast('💾 Markdown saved');
+}
+
+function getPdfFilenameFromUser() {
+    const suggested = (currentDocBaseName || 'document').trim() || 'document';
+    const entered = prompt('Save PDF as (without extension):', suggested);
+    if (entered === null) return null;
+    const base = guessBaseNameFromFilename(entered);
+    currentDocBaseName = base;
+    return `${base}.pdf`;
 }
 
 // ==================== Markdown Configuration ====================
@@ -238,12 +377,12 @@ console.log('Hello, World!');
 **Try it now!** ✨
 `;
 
-markdownInput.value = defaultMarkdown;
+setMarkdownValue(defaultMarkdown);
 
 // ==================== Core Functions ====================
 
 function updatePreview() {
-    const markdownText = markdownInput.value;
+    const markdownText = getMarkdownValue();
     const htmlContent = marked.parse(markdownText);
     paginateContent(htmlContent);
 }
@@ -434,7 +573,7 @@ function getPdfApiUrl() {
 
     // If index.html is opened directly from disk, the only workable way to hit the API
     // is to call a local server explicitly (and have it allow CORS).
-    return 'http://127.0.0.1:8000/api/pdf';
+    return 'http://127.0.0.1:8010/api/pdf';
 }
 
 function getLoadedStylesheetText(hrefIncludes) {
@@ -486,6 +625,76 @@ function getCurrentPreviewZoom() {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
+function setEditorZoom(fontSizePx) {
+    if (!editorWrapper) return;
+    const minSize = 12;
+    const maxSize = 22;
+    const nextSize = Math.min(maxSize, Math.max(minSize, fontSizePx));
+    editorWrapper.style.setProperty('--editor-font-size', `${nextSize}px`);
+
+    if (markdownEditor) markdownEditor.refresh();
+    if (cssEditor) cssEditor.refresh();
+
+    try {
+        localStorage.setItem(STORAGE_KEYS.editorZoom, String(nextSize));
+    } catch { /* ignore */ }
+}
+
+function getCurrentEditorZoom() {
+    const raw = editorWrapper ? getComputedStyle(editorWrapper).getPropertyValue('--editor-font-size') : '';
+    const parsed = parseFloat(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+
+    const stored = localStorage.getItem(STORAGE_KEYS.editorZoom);
+    const storedNum = stored ? Number(stored) : NaN;
+    return Number.isFinite(storedNum) && storedNum > 0 ? storedNum : 15;
+}
+
+function applySavedEditorZoom() {
+    const stored = localStorage.getItem(STORAGE_KEYS.editorZoom);
+    const storedNum = stored ? Number(stored) : NaN;
+    const nextSize = Number.isFinite(storedNum) && storedNum > 0 ? storedNum : getCurrentEditorZoom();
+    setEditorZoom(nextSize);
+}
+
+function applySavedEditorSplit() {
+    if (!editorContainer) return;
+    const stored = localStorage.getItem(STORAGE_KEYS.editorSplit);
+    if (stored) {
+        editorContainer.style.setProperty('--editor-split', stored);
+    }
+}
+
+function setupEditorResize() {
+    if (!editorDivider || !editorContainer) return;
+
+    const onPointerMove = (event) => {
+        const rect = editorContainer.getBoundingClientRect();
+        const x = event.clientX - rect.left;
+        const percent = Math.max(25, Math.min(75, (x / rect.width) * 100));
+        const value = `${percent.toFixed(2)}%`;
+        editorContainer.style.setProperty('--editor-split', value);
+        try {
+            localStorage.setItem(STORAGE_KEYS.editorSplit, value);
+        } catch { /* ignore */ }
+    };
+
+    const stopDrag = () => {
+        document.removeEventListener('pointermove', onPointerMove);
+        document.removeEventListener('pointerup', stopDrag);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+    };
+
+    editorDivider.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        document.body.style.cursor = 'col-resize';
+        document.body.style.userSelect = 'none';
+        document.addEventListener('pointermove', onPointerMove);
+        document.addEventListener('pointerup', stopDrag, { once: true });
+    });
+}
+
 // ==================== PDF Generation (html2pdf) ====================
 // NOTE: html2pdf/html2canvas produces image-based PDFs (text not selectable).
 
@@ -499,10 +708,13 @@ function getPreviewPagesHTML() {
 }
 
 async function downloadPDF() {
-    if (!markdownInput.value.trim()) {
+    if (!getMarkdownValue().trim()) {
         showToast('⚠️ Please enter some Markdown content first!');
         return;
     }
+
+    const pdfFilename = getPdfFilenameFromUser();
+    if (!pdfFilename) return;
 
     showLoading();
 
@@ -516,8 +728,10 @@ async function downloadPDF() {
             }
         } catch { /* ignore */ }
 
-        // Styling is always included now (CSS tab controls it).
+        // Combine default markdown styles with any custom CSS.
         const customStyles = getCustomCss();
+        const baseStyles = defaultMarkdownCssText || '';
+        const combinedStyles = (baseStyles && customStyles) ? `${baseStyles}\n\n${customStyles}` : (customStyles || baseStyles);
 
         const allContent = getPreviewPagesHTML();
 
@@ -558,6 +772,9 @@ async function downloadPDF() {
                     .a4-page:last-child { page-break-after: auto; break-after: auto; }
                     pre, blockquote, table, img { page-break-inside: avoid; break-inside: avoid; }
                     ${pageNumberCss}
+                    .float-right { float: right; display: inline-block; }
+                    .line-split { display: flex; align-items: baseline; gap: 1rem; }
+                    .line-split .right { margin-left: auto; text-align: right; }
                 `;
 
         const htmlForServer = `<!doctype html>
@@ -569,7 +786,7 @@ async function downloadPDF() {
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link rel="stylesheet" href="${googleFontsHref}">
         <style>${printCss}</style>
-        <style>${customStyles}</style>
+        <style>${combinedStyles}</style>
     </head>
     <body>
         ${allContent}
@@ -581,7 +798,7 @@ async function downloadPDF() {
             const response = await fetch(getPdfApiUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ html: htmlForServer, filename: 'document.pdf' })
+                body: JSON.stringify({ html: htmlForServer, filename: pdfFilename })
             });
 
             if (response.ok) {
@@ -589,7 +806,7 @@ async function downloadPDF() {
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = 'document.pdf';
+                a.download = pdfFilename;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -663,13 +880,13 @@ async function downloadPDF() {
                             }
                         ` : ''}
 
-                        ${customStyles}
+                        ${combinedStyles}
                     </style>
                     <div class="pdf-root">${cleanContent}</div>`;
 
         const opt = {
             margin: 0,
-            filename: 'document.pdf',
+            filename: pdfFilename,
             image: { type: 'jpeg', quality: 1.0 },
             html2canvas: {
                 scale: 2,
@@ -710,10 +927,10 @@ async function downloadPDF() {
 // ==================== Other Functions ====================
 
 function clearEditor() {
-    if (markdownInput.value.trim() && !confirm('Are you sure you want to clear all content?')) {
+    if (getMarkdownValue().trim() && !confirm('Are you sure you want to clear all content?')) {
         return;
     }
-    markdownInput.value = '';
+    setMarkdownValue('');
     updatePreview();
     showToast('🗑️ Content cleared');
 }
@@ -741,10 +958,10 @@ function handleFileSelect(event) {
     reader.onload = function (e) {
         const raw = e.target.result;
         const extracted = extractCustomCssFromMarkdown(raw);
-        markdownInput.value = extracted.markdown;
+        setMarkdownValue(extracted.markdown);
         setCustomCss(extracted.css || defaultMarkdownCssText);
-        resetTextareaView(markdownInput);
-        resetTextareaView(cssInput);
+        resetTextareaView(markdownEditor || markdownInput);
+        resetTextareaView(cssEditor || cssInput);
         updatePreview();
         showToast('✅ File loaded successfully!');
         autoSave();
@@ -845,7 +1062,7 @@ MIT © 2026 Your Name
 
 For more information, visit [our website](https://example.com).
 `;
-    markdownInput.value = exampleMarkdown;
+    setMarkdownValue(exampleMarkdown);
     updatePreview();
     showToast('📄 Example loaded!');
 }
@@ -929,7 +1146,7 @@ function resetTouchDistance() {
 
 function autoSave() {
     try {
-        localStorage.setItem(STORAGE_KEYS.markdown, markdownInput.value);
+        localStorage.setItem(STORAGE_KEYS.markdown, getMarkdownValue());
         localStorage.setItem(STORAGE_KEYS.pageNumbers, pageNumbers.checked);
 
         if (cssInput) {
@@ -953,7 +1170,7 @@ function loadFromStorage() {
         const savedCustomCss = localStorage.getItem(STORAGE_KEYS.customCss);
         const savedZoom = localStorage.getItem(STORAGE_KEYS.previewZoom);
 
-        if (savedContent) markdownInput.value = savedContent;
+        if (savedContent) setMarkdownValue(savedContent);
         if (savedPageNumbers !== null) pageNumbers.checked = savedPageNumbers === 'true';
 
         if (savedCustomCss !== null) {
@@ -973,8 +1190,8 @@ function loadFromStorage() {
         applyPageNumberVisibility();
 
         // Keep editor viewport at the top on refresh.
-        resetTextareaView(markdownInput);
-        resetTextareaView(cssInput);
+        resetTextareaView(markdownEditor || markdownInput);
+        resetTextareaView(cssEditor || cssInput);
     } catch (error) {
         console.warn('Could not load from localStorage:', error);
     }
@@ -983,13 +1200,112 @@ function loadFromStorage() {
 // ==================== Event Listeners ====================
 
 let debounceTimer;
-markdownInput.addEventListener('input', () => {
+function handleMarkdownInputChange() {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
         updatePreview();
         autoSave();
     }, 300);
-});
+}
+
+function handleCssInputChange() {
+    applyCustomCssToPreview();
+    autoSave();
+}
+
+function handleMarkdownEditorKeydown(event, target) {
+    const editorTarget = target || markdownEditor || markdownInput;
+
+    // SHIFT + R wraps the selection in a right-float span
+    if (event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'R' || event.key === 'r')) {
+        event.preventDefault();
+        let hasSelection = false;
+
+        if (isCodeMirrorInstance(editorTarget)) {
+            const selected = editorTarget.getDoc().getSelection();
+            hasSelection = !!selected;
+        } else {
+            hasSelection = editorTarget.selectionStart !== editorTarget.selectionEnd;
+        }
+
+        if (!hasSelection) {
+            showToast('Select text to float right');
+            return;
+        }
+
+        wrapOrInsert(editorTarget, '<span class="float-right">', '</span>');
+        updatePreview();
+        autoSave();
+        return;
+    }
+
+    // CTRL + ENTER for Page Break
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+        event.preventDefault();
+        const snippet = '\n\n<div class="page-break"></div>\n\n';
+        insertSnippet(editorTarget, snippet);
+        updatePreview();
+        autoSave();
+        showToast('📑 Page break inserted');
+        return;
+    }
+
+    // ALT + N for blank line (avoid conflicts with browser/system shortcuts and page-break)
+    if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'n' || event.key === 'N')) {
+        event.preventDefault();
+        const snippet = '<br>\n';
+        insertSnippet(editorTarget, snippet);
+        updatePreview();
+        autoSave();
+        showToast('↵ <br> inserted');
+        return;
+    }
+
+    // Basic formatting shortcuts
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === 'b' || event.key === 'B')) {
+        event.preventDefault();
+        wrapOrInsert(editorTarget, '**', '**');
+        updatePreview();
+        autoSave();
+        return;
+    }
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === 'i' || event.key === 'I')) {
+        event.preventDefault();
+        wrapOrInsert(editorTarget, '*', '*');
+        updatePreview();
+        autoSave();
+        return;
+    }
+    // Inline code (common in some editors)
+    if ((event.ctrlKey || event.metaKey) && !event.shiftKey && (event.key === 'e' || event.key === 'E')) {
+        event.preventDefault();
+        wrapOrInsert(editorTarget, '`', '`');
+        updatePreview();
+        autoSave();
+        return;
+    }
+
+    if (event.key === 'Tab') {
+        event.preventDefault();
+        insertSnippet(editorTarget, '    ');
+    }
+}
+
+function bindEditorEvents() {
+    if (markdownEditor) {
+        markdownEditor.on('change', handleMarkdownInputChange);
+        markdownEditor.on('keydown', (cm, event) => handleMarkdownEditorKeydown(event, cm));
+    } else if (markdownInput) {
+        markdownInput.addEventListener('input', handleMarkdownInputChange);
+        markdownInput.addEventListener('keydown', (event) => handleMarkdownEditorKeydown(event, markdownInput));
+    }
+
+    if (cssEditor) {
+        cssEditor.on('change', handleCssInputChange);
+    } else if (cssInput) {
+        cssInput.addEventListener('input', handleCssInputChange);
+    }
+}
 
 btnDownload.addEventListener('click', downloadPDF);
 if (btnSaveMd) btnSaveMd.addEventListener('click', saveMarkdownFile);
@@ -1013,6 +1329,20 @@ if (btnZoomOut) {
     });
 }
 
+if (btnEditorZoomIn) {
+    btnEditorZoomIn.addEventListener('click', () => {
+        const current = getCurrentEditorZoom();
+        setEditorZoom(current + 1);
+    });
+}
+
+if (btnEditorZoomOut) {
+    btnEditorZoomOut.addEventListener('click', () => {
+        const current = getCurrentEditorZoom();
+        setEditorZoom(current - 1);
+    });
+}
+
 fileInput.addEventListener('change', handleFileSelect);
 
 pageNumbers.addEventListener('change', () => {
@@ -1021,10 +1351,7 @@ pageNumbers.addEventListener('change', () => {
 });
 
 if (cssInput) {
-    cssInput.addEventListener('input', () => {
-        applyCustomCssToPreview();
-        autoSave();
-    });
+    // Events are bound in bindEditorEvents to support CodeMirror.
 }
 
 if (tabMarkdown && tabCss) {
@@ -1034,83 +1361,7 @@ if (tabMarkdown && tabCss) {
 
 document.addEventListener('keydown', handleKeyboardShortcuts);
 
-markdownInput.addEventListener('keydown', (e) => {
-    // CTRL + ENTER for Page Break
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-        e.preventDefault();
-        const snippet = '\n\n<div class="page-break"></div>\n\n';
-
-        // Use execCommand to preserve Undo history
-        if (!document.execCommand('insertText', false, snippet)) {
-            // Fallback for browsers that don't support execCommand on textarea
-            const start = markdownInput.selectionStart;
-            const end = markdownInput.selectionEnd;
-            const value = markdownInput.value;
-            markdownInput.value = value.substring(0, start) + snippet + value.substring(end);
-            markdownInput.selectionStart = markdownInput.selectionEnd = start + snippet.length;
-        }
-
-        updatePreview();
-        autoSave();
-        showToast('📑 Page break inserted');
-        return;
-    }
-
-    // ALT + N for blank line (avoid conflicts with browser/system shortcuts and page-break)
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'n' || e.key === 'N')) {
-        e.preventDefault();
-        const snippet = '<br>\n';
-        if (!document.execCommand('insertText', false, snippet)) {
-            const start = markdownInput.selectionStart;
-            const end = markdownInput.selectionEnd;
-            const value = markdownInput.value;
-            markdownInput.value = value.substring(0, start) + snippet + value.substring(end);
-            markdownInput.selectionStart = markdownInput.selectionEnd = start + snippet.length;
-        }
-        updatePreview();
-        autoSave();
-        showToast('↵ <br> inserted');
-        return;
-    }
-
-    // Basic formatting shortcuts
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'b' || e.key === 'B')) {
-        e.preventDefault();
-        wrapOrInsert(markdownInput, '**', '**');
-        updatePreview();
-        autoSave();
-        return;
-    }
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'i' || e.key === 'I')) {
-        e.preventDefault();
-        wrapOrInsert(markdownInput, '*', '*');
-        updatePreview();
-        autoSave();
-        return;
-    }
-    // Inline code (common in some editors)
-    if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'e' || e.key === 'E')) {
-        e.preventDefault();
-        wrapOrInsert(markdownInput, '`', '`');
-        updatePreview();
-        autoSave();
-        return;
-    }
-
-    if (e.key === 'Tab') {
-        e.preventDefault();
-
-        // Use execCommand to preserve Undo history
-        if (!document.execCommand('insertText', false, '    ')) {
-            // Fallback for browsers that don't support execCommand on textarea
-            const start = markdownInput.selectionStart;
-            const end = markdownInput.selectionEnd;
-            const value = markdownInput.value;
-            markdownInput.value = value.substring(0, start) + '    ' + value.substring(end);
-            markdownInput.selectionStart = markdownInput.selectionEnd = start + 4;
-        }
-    }
-});
+// Markdown editor key bindings are handled in bindEditorEvents.
 
 // Preview Panel Zoom Listeners
 const previewWrapper = document.querySelector('.preview-wrapper');
@@ -1121,12 +1372,40 @@ if (previewWrapper) {
     previewWrapper.addEventListener('touchcancel', resetTouchDistance);
 }
 
+function setupHeaderFadeOnScroll() {
+    const header = document.querySelector('.header');
+    if (!header) return;
+
+    let ticking = false;
+    const update = () => {
+        const shouldFade = window.scrollY > 20;
+        header.classList.toggle('is-faded', shouldFade);
+        ticking = false;
+    };
+
+    const onScroll = () => {
+        if (ticking) return;
+        ticking = true;
+        requestAnimationFrame(update);
+    };
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    update();
+}
+
 // ==================== Initialization ====================
 
 (async () => {
     await initDefaultMarkdownCss();
+    initCodeEditors();
     loadFromStorage();
     updatePreview();
+    bindEditorEvents();
+    applySavedEditorZoom();
+    applySavedEditorSplit();
+    setupEditorResize();
+
+    setupHeaderFadeOnScroll();
 
     // Default zoom only if nothing was restored.
     if (!previewContent.dataset.zoom) {
@@ -1138,8 +1417,8 @@ if (previewWrapper) {
 
     // Some browsers scroll to the focused caret after layout; force top once more.
     requestAnimationFrame(() => {
-        resetTextareaView(markdownInput);
-        resetTextareaView(cssInput);
+        resetTextareaView(markdownEditor || markdownInput);
+        resetTextareaView(cssEditor || cssInput);
     });
 })();
 

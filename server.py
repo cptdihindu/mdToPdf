@@ -65,7 +65,7 @@ async def render_pdf(payload: PdfRequest) -> Response:
     return Response(content=pdf_bytes, media_type="application/pdf", headers=headers)
 
 
-# Static file hosting (so you can open http://localhost:8000/)
+# Static file hosting (so you can open http://localhost:8010/)
 # Note: define API routes above, then mount static at '/'.
 app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="static")
 
@@ -74,5 +74,5 @@ if __name__ == "__main__":
     # Convenience: python server.py
     import uvicorn
 
-    port = int(os.environ.get("PORT", "8000"))
+    port = int(os.environ.get("PORT", "8010"))
     uvicorn.run("server:app", host="127.0.0.1", port=port, reload=False)

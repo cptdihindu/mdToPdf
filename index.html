@@ -14,6 +14,8 @@
         rel="stylesheet">
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="markdown-styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
 </head>
 
 <body>
@@ -76,6 +78,20 @@
                                 </div>
                             </div>
                             <div class="panel-actions">
+                                <button class="icon-btn" id="btn-editor-zoom-out" title="Zoom out">
+                                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <path d="M4 9H14" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" />
+                                    </svg>
+                                </button>
+                                <button class="icon-btn" id="btn-editor-zoom-in" title="Zoom in">
+                                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <path d="M9 4V14" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" />
+                                        <path d="M4 9H14" stroke="currentColor" stroke-width="2"
+                                            stroke-linecap="round" />
+                                    </svg>
+                                </button>
                                 <button class="icon-btn" id="btn-clear" title="Clear content">
                                     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                                         <path d="M13.5 4.5L4.5 13.5M4.5 4.5L13.5 13.5" stroke="currentColor"
@@ -116,6 +132,8 @@ Create amazing PDFs from Markdown!
 */" spellcheck="false" hidden></textarea>
                         </div>
                     </div>
+
+                    <div class="editor-divider" id="editor-divider" role="separator" aria-orientation="vertical" tabindex="0"></div>
 
                     <div class="editor-panel">
                         <div class="panel-header">
@@ -228,4 +246,8 @@ Create amazing PDFs from Markdown!
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/display/placeholder.min.js"></script>
     <script src="script.js"></script>
