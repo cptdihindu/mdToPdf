@@ -1,0 +1,817 @@
+/* ==================== CSS Variables & Reset ==================== */
+:root {
+    /* Color Palette */
+    --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    --secondary-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+    --accent-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+
+    --primary-500: #667eea;
+    --primary-600: #5568d3;
+    --primary-700: #4c5fc7;
+
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #13131a;
+    --bg-tertiary: #1a1a24;
+    --bg-card: rgba(26, 26, 36, 0.6);
+    --bg-card-hover: rgba(26, 26, 36, 0.8);
+
+    --text-primary: #ffffff;
+    --text-secondary: #a0a0b8;
+    --text-tertiary: #6b6b85;
+
+    --border-color: rgba(255, 255, 255, 0.1);
+    --border-color-hover: rgba(255, 255, 255, 0.2);
+
+    /* Spacing */
+    --spacing-xs: 0.5rem;
+    --spacing-sm: 0.75rem;
+    --spacing-md: 1rem;
+    --spacing-lg: 1.5rem;
+    --spacing-xl: 2rem;
+    --spacing-2xl: 3rem;
+
+    /* Border Radius */
+    --radius-sm: 0.5rem;
+    --radius-md: 0.75rem;
+    --radius-lg: 1rem;
+    --radius-xl: 1.5rem;
+
+    /* Shadows */
+    --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.1);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.3);
+    --shadow-glow: 0 0 40px rgba(102, 126, 234, 0.3);
+
+    /* Transitions */
+    --transition-fast: 150ms ease;
+    --transition-base: 250ms ease;
+    --transition-slow: 350ms ease;
+
+    /* Typography */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-mono: 'JetBrains Mono', 'Courier New', monospace;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    font-size: 16px;
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: var(--font-sans);
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    overflow-x: hidden;
+    min-height: 100vh;
+}
+
+/* ==================== Background Effects ==================== */
+.background-gradient {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle at 20% 50%, rgba(102, 126, 234, 0.15) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(118, 75, 162, 0.15) 0%, transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+.background-orbs {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.4;
+    animation: float 20s ease-in-out infinite;
+}
+
+.orb-1 {
+    width: 500px;
+    height: 500px;
+    background: radial-gradient(circle, #667eea, transparent);
+    top: -250px;
+    left: -250px;
+    animation-delay: 0s;
+}
+
+.orb-2 {
+    width: 400px;
+    height: 400px;
+    background: radial-gradient(circle, #764ba2, transparent);
+    bottom: -200px;
+    right: -200px;
+    animation-delay: -7s;
+}
+
+.orb-3 {
+    width: 350px;
+    height: 350px;
+    background: radial-gradient(circle, #f093fb, transparent);
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    animation-delay: -14s;
+}
+
+@keyframes float {
+
+    0%,
+    100% {
+        transform: translate(0, 0) scale(1);
+    }
+
+    33% {
+        transform: translate(50px, -50px) scale(1.1);
+    }
+
+    66% {
+        transform: translate(-50px, 50px) scale(0.9);
+    }
+}
+
+/* ==================== Container ==================== */
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 var(--spacing-lg);
+    position: relative;
+    z-index: 1;
+}
+
+/* ==================== Header ==================== */
+.header {
+    padding: var(--spacing-lg) 0;
+    backdrop-filter: blur(10px);
+    background: rgba(10, 10, 15, 0.8);
+    border-bottom: 1px solid var(--border-color);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+
+.header .container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.logo {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+}
+
+.logo-text {
+    font-size: 1.5rem;
+    font-weight: 700;
+    background: var(--primary-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.logo-accent {
+    color: var(--primary-500);
+}
+
+.nav {
+    display: flex;
+    gap: var(--spacing-md);
+}
+
+/* ==================== Buttons ==================== */
+.btn-primary {
+    padding: 0.875rem 2rem;
+    background: var(--primary-gradient);
+    color: white;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
+    font-family: var(--font-sans);
+}
+
+.btn-primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 24px rgba(102, 126, 234, 0.5);
+}
+
+.btn-primary:active {
+    transform: translateY(0);
+}
+
+.btn-secondary {
+    padding: 0.625rem 1.25rem;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    font-size: 0.9375rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-base);
+    font-family: var(--font-sans);
+}
+
+.btn-secondary:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--border-color-hover);
+}
+
+.icon-btn {
+    width: 36px;
+    height: 36px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: all var(--transition-base);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-btn:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border-color: var(--border-color-hover);
+}
+
+/* ==================== Hero Section ==================== */
+.hero {
+    text-align: center;
+    padding: var(--spacing-2xl) 0;
+    margin-bottom: var(--spacing-xl);
+}
+
+.hero-title {
+    font-size: 3.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    margin-bottom: var(--spacing-lg);
+    letter-spacing: -0.02em;
+}
+
+.gradient-text {
+    background: var(--primary-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.hero-subtitle {
+    font-size: 1.25rem;
+    color: var(--text-secondary);
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+/* ==================== Editor Section ==================== */
+.editor-section {
+    margin-bottom: var(--spacing-2xl);
+}
+
+.editor-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-lg);
+}
+
+.editor-panel {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    backdrop-filter: blur(10px);
+    transition: all var(--transition-base);
+}
+
+.editor-panel:hover {
+    border-color: var(--border-color-hover);
+    box-shadow: var(--shadow-md);
+}
+
+.panel-header {
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.panel-title-group {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    min-width: 0;
+}
+
+.editor-tabs {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.tab-btn {
+    padding: 0.375rem 0.75rem;
+    background: transparent;
+    color: var(--text-secondary);
+    border: none;
+    border-radius: calc(var(--radius-sm) - 2px);
+    cursor: pointer;
+    font-size: 0.875rem;
+    font-weight: 600;
+    transition: all var(--transition-fast);
+    font-family: var(--font-sans);
+}
+
+.tab-btn:hover {
+    color: var(--text-primary);
+}
+
+.tab-btn.active {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-sm);
+}
+
+.panel-title {
+    font-size: 1rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    color: var(--text-primary);
+}
+
+.panel-actions {
+    display: flex;
+    gap: var(--spacing-sm);
+}
+
+.editor-wrapper {
+    height: 500px;
+    overflow: hidden;
+}
+
+.markdown-editor {
+    width: 100%;
+    height: 100%;
+    padding: var(--spacing-lg);
+    background: transparent;
+    color: var(--text-primary);
+    border: none;
+    outline: none;
+    font-family: var(--font-mono);
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    resize: none;
+    overflow-y: auto;
+}
+
+.markdown-editor::placeholder {
+    color: var(--text-tertiary);
+}
+
+.preview-wrapper {
+    height: 500px;
+    overflow: auto;
+    background: #e5e5e5;
+    padding: 2rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2rem;
+}
+
+/* ==================== Fullscreen Preview Fix ==================== */
+/* When the preview panel enters fullscreen, let the wrapper fill the screen */
+.editor-panel:fullscreen {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+}
+
+.editor-panel:fullscreen .panel-header {
+    flex: 0 0 auto;
+}
+
+.editor-panel:fullscreen .preview-wrapper {
+    flex: 1 1 auto;
+    height: auto;
+}
+
+.fullscreen-actions {
+    display: none;
+}
+
+.editor-panel:fullscreen .fullscreen-actions {
+    display: flex;
+    gap: var(--spacing-md);
+    position: fixed;
+    right: var(--spacing-lg);
+    bottom: var(--spacing-lg);
+    z-index: 1000;
+}
+
+/* WebKit prefix (some browsers) */
+.editor-panel:-webkit-full-screen {
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-secondary);
+}
+
+.editor-panel:-webkit-full-screen .panel-header {
+    flex: 0 0 auto;
+}
+
+.editor-panel:-webkit-full-screen .preview-wrapper {
+    flex: 1 1 auto;
+    height: auto;
+}
+
+.editor-panel:-webkit-full-screen .fullscreen-actions {
+    display: flex;
+    gap: var(--spacing-md);
+    position: fixed;
+    right: var(--spacing-lg);
+    bottom: var(--spacing-lg);
+    z-index: 1000;
+}
+
+.preview-content {
+    /* A4 dimensions at 96 DPI: 794px x 1123px */
+    width: 210mm;
+    /* A4 width */
+    min-height: 297mm;
+    /* A4 height */
+    background: white;
+    color: #1a1a1a;
+    font-family: Barlow, sans-serif;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 8px 24px rgba(0, 0, 0, 0.15);
+    position: relative;
+    margin: 0 auto;
+    page-break-after: always;
+    transform-origin: top center;
+}
+
+/* A4 Page styling */
+.a4-page {
+    width: 210mm;
+    min-height: 297mm;
+    background: white;
+    padding: 20mm;
+    /* Standard margins */
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 8px 24px rgba(0, 0, 0, 0.15);
+    margin-bottom: 2rem;
+    position: relative;
+    box-sizing: border-box;
+}
+
+.a4-page:last-child {
+    margin-bottom: 0;
+}
+
+/* Page number indicator (shown only when enabled) */
+.a4-page::after {
+    content: attr(data-page);
+    position: absolute;
+    bottom: 10mm;
+    right: 20mm;
+    font-size: 10px;
+    color: #999;
+    font-family: var(--font-sans);
+    display: none;
+}
+
+.show-page-numbers .a4-page::after {
+    display: block;
+}
+
+/* Preview content inherits styles from markdown-styles.css */
+/* Additional preview-specific overrides can be added here if needed */
+
+/* ==================== Controls ==================== */
+.controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: var(--spacing-lg);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    backdrop-filter: blur(10px);
+}
+
+.controls-left {
+    display: flex;
+    gap: var(--spacing-lg);
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-sm);
+    cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+}
+
+.checkbox-label input[type="checkbox"] {
+    display: none;
+}
+
+.checkbox-custom {
+    width: 20px;
+    height: 20px;
+    border: 2px solid var(--border-color);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--transition-base);
+}
+
+.checkbox-label input[type="checkbox"]:checked+.checkbox-custom {
+    background: var(--primary-gradient);
+    border-color: var(--primary-500);
+}
+
+.checkbox-label input[type="checkbox"]:checked+.checkbox-custom::after {
+    content: '✓';
+    color: white;
+    font-size: 14px;
+    font-weight: bold;
+}
+
+/* ==================== Features Section ==================== */
+.features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-2xl);
+}
+
+.feature-card {
+    padding: var(--spacing-xl);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    text-align: center;
+    transition: all var(--transition-base);
+    backdrop-filter: blur(10px);
+}
+
+.feature-card:hover {
+    transform: translateY(-4px);
+    border-color: var(--border-color-hover);
+    box-shadow: var(--shadow-md);
+}
+
+.feature-icon {
+    font-size: 3rem;
+    margin-bottom: var(--spacing-md);
+}
+
+.feature-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    margin-bottom: var(--spacing-sm);
+}
+
+.feature-description {
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+}
+
+/* ==================== Footer ==================== */
+.footer {
+    padding: var(--spacing-xl) 0;
+    text-align: center;
+    color: var(--text-tertiary);
+    border-top: 1px solid var(--border-color);
+}
+
+/* ==================== Loading Overlay ==================== */
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(10, 10, 15, 0.95);
+    backdrop-filter: blur(10px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: var(--spacing-lg);
+    z-index: 1000;
+}
+
+.loading-overlay.active {
+    display: flex;
+}
+
+.loading-spinner {
+    width: 60px;
+    height: 60px;
+    border: 4px solid rgba(255, 255, 255, 0.1);
+    border-top-color: var(--primary-500);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.loading-text {
+    font-size: 1.125rem;
+    color: var(--text-secondary);
+}
+
+/* ==================== Toast Notification ==================== */
+.toast {
+    position: fixed;
+    bottom: var(--spacing-xl);
+    right: var(--spacing-xl);
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    box-shadow: var(--shadow-lg);
+    transform: translateY(150%);
+    transition: transform var(--transition-base);
+    z-index: 1001;
+    max-width: 400px;
+}
+
+.toast.show {
+    transform: translateY(0);
+}
+
+/* ==================== Scrollbar Styling ==================== */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-secondary);
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--bg-tertiary);
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* ==================== Responsive Design ==================== */
+@media (max-width: 1024px) {
+    .editor-container {
+        grid-template-columns: 1fr;
+    }
+
+    .hero-title {
+        font-size: 2.5rem;
+    }
+
+    /* Scale A4 pages to fit tablet screens */
+    .a4-page {
+        width: 170mm;
+        min-height: 240mm;
+        padding: 15mm;
+    }
+
+    .preview-wrapper {
+        padding: 1.5rem;
+    }
+}
+
+@media (max-width: 768px) {
+    .hero-title {
+        font-size: 2rem;
+    }
+
+    .hero-subtitle {
+        font-size: 1rem;
+    }
+
+    .controls {
+        flex-direction: column;
+        gap: var(--spacing-md);
+    }
+
+    .controls-left,
+    .controls-right {
+        width: 100%;
+    }
+
+    .btn-primary {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .features {
+        grid-template-columns: 1fr;
+    }
+
+    /* Further scale A4 pages for mobile */
+    .a4-page {
+        width: 100%;
+        max-width: 500px;
+        height: auto;
+        padding: 15mm;
+        font-size: 14px;
+    }
+
+    .preview-wrapper {
+        padding: 1rem;
+    }
+
+    .editor-wrapper,
+    .preview-wrapper {
+        height: 400px;
+    }
+}
+
+@media (max-width: 480px) {
+    .header .container {
+        flex-direction: column;
+        gap: var(--spacing-md);
+    }
+
+    .nav {
+        width: 100%;
+        justify-content: center;
+    }
+
+    .a4-page {
+        padding: 10mm;
+        font-size: 13px;
+    }
+
+    .preview-wrapper {
+        padding: 0.5rem;
+        gap: 1rem;
+    }
+
+    .a4-page::after {
+        font-size: 8px;
+        bottom: 8mm;
+        right: 10mm;
+    }
+}
+
+.css-editor {
+    font-family: var(--font-mono);
+}
+
+.controls-right {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+}

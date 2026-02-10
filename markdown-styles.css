@@ -1,0 +1,163 @@
+/* ==================== Markdown Content Styles ==================== */
+/* These styles are applied to the preview and PDF output */
+
+/* IMPORTANT: Do NOT style all divs in the entire website.
+   Only style the markdown preview/pdf areas */
+.preview-content,
+.a4-page,
+.pdf-content {
+    font-family: Barlow, sans-serif;
+    line-height: 1.6;
+}
+
+/* Code blocks */
+pre {
+    background: #2d2d2d;
+    border-radius: 4px;
+    margin: 0.5em 0;
+    padding: 1em;
+    overflow: auto;
+}
+
+code {
+    font-family: 'Fira Code', Consolas, Monaco, monospace;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-wrap: anywhere;
+    color: rgb(235, 235, 235);
+}
+
+:not(pre)>code {
+    background: #d8d8d8;
+    padding: 2px 4px;
+    border-radius: 3px;
+    color: #e83e8c;
+}
+
+/* Images */
+img {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Tables */
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+}
+
+th,
+td {
+    border: 1px solid #ddd;
+    padding: 8px;
+}
+
+th {
+    background-color: #f4f4f4;
+}
+
+/* Blockquotes */
+blockquote {
+    border-left: 4px solid #ddd;
+    padding-left: 1em;
+    margin-left: 0;
+    color: #666;
+}
+
+/* Headings */
+h1 {
+    font-size: 1.3em;
+    color: #2c3e50;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 0.5rem;
+    margin: 1.5rem 0 1rem 0;
+    text-align: center;
+    /* Prevent orphaned headings */
+    page-break-after: avoid;
+    break-after: avoid-page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+h2 {
+    font-size: 1.3em;
+    color: #34495e;
+    margin: 1.5rem 0 0.75rem 0;
+    text-align: left;
+    /* Prevent orphaned headings */
+    page-break-after: avoid;
+    break-after: avoid-page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+h3 {
+    font-size: 1.2em;
+    color: #455a64;
+    margin: 1.25rem 0 0.5rem 0;
+    /* Prevent orphaned headings */
+    page-break-after: avoid;
+    break-after: avoid-page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+h4 {
+    font-size: 1.1em;
+    color: #546e7a;
+    margin: 1rem 0 0.5rem 0;
+    /* Prevent orphaned headings */
+    page-break-after: avoid;
+    break-after: avoid-page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+h5,
+h6 {
+    font-size: 1em;
+    color: #607d8b;
+    margin: 0.75rem 0 0.5rem 0;
+    /* Prevent orphaned headings */
+    page-break-after: avoid;
+    break-after: avoid-page;
+    page-break-inside: avoid;
+    break-inside: avoid;
+}
+
+/* Page breaks */
+.page-break {
+    page-break-before: always;
+    break-before: page;
+    /* Usage: <div class="page-break"></div> */
+}
+
+/* Paragraph */
+p {
+    text-align: justify;
+    margin: 0 0 0.75em 0;
+    line-height: 1.6;
+}
+
+/* Lists */
+ul,
+ol {
+    margin: 0.5em 0 1em 0;
+    padding-left: 2em;
+}
+
+li {
+    margin-bottom: 0.25em;
+}
+
+/* Ensure first element has no top margin */
+h1:first-child,
+h2:first-child,
+h3:first-child,
+h4:first-child,
+h5:first-child,
+h6:first-child,
+p:first-child {
+    margin-top: 0;
+}
