@@ -585,7 +585,7 @@ body {
 /* A4 Page styling */
 .a4-page {
     width: 210mm;
-    min-height: 297mm;
+    height: 297mm;
     background: white;
     padding: 20mm;
     /* Standard margins */
@@ -593,6 +593,7 @@ body {
     margin-bottom: 2rem;
     position: relative;
     box-sizing: border-box;
+    overflow: hidden;
 }
 
 .a4-page:last-child {

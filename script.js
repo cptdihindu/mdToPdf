@@ -30,6 +30,7 @@ const STORAGE_KEYS = {
     markdown: 'md2pdf_content',
     pageNumbers: 'md2pdf_page_numbers',
     customCss: 'md2pdf_custom_css',
+    savedDefaultCssHash: 'md2pdf_saved_default_css_hash',
     previewZoom: 'md2pdf_preview_zoom',
     editorZoom: 'md2pdf_editor_zoom',
     editorSplit: 'md2pdf_editor_split'
@@ -39,6 +40,159 @@ let defaultMarkdownCssText = '';
 let currentDocBaseName = 'document';
 let markdownEditor = null;
 let cssEditor = null;
+
+// CSS tab persistence:
+// Only persist CSS when the user actually edits the CSS tab.
+// This prevents an old bundled default from getting stuck in localStorage and
+// overriding edits made to markdown-styles.css on disk.
+let userEditedCss = false;
+let suppressCssTracking = false;
+
+function looksLikeBundledDefaultCss(cssText) {
+    const t = String(cssText || '').toLowerCase();
+    return t.includes('markdown content styles') && t.includes('these styles are applied to the preview and pdf output');
+}
+
+function setCustomCssProgrammatic(value) {
+    suppressCssTracking = true;
+    try {
+        setCustomCss(value || '');
+    } finally {
+        suppressCssTracking = false;
+    }
+}
+
+function hashText(text) {
+    // Non-crypto hash (fast) used only for cache invalidation.
+    const s = String(text || '');
+    let h = 2166136261;
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return String(h >>> 0);
+}
+
+// ==================== Session Workspace (server-side) ====================
+// We keep a per-tab session workspace on the FastAPI server.
+// Markdown stores images as relative paths (images/<name>), but preview/PDF need
+// absolute URLs to fetch from the server securely.
+const SESSION_STORAGE_KEY = 'md2pdf_session_id';
+// Persist the most recent session so images continue to resolve after a tab is closed.
+// (sessionStorage is per-tab; localStorage survives tab close.)
+const SESSION_PERSIST_KEY = 'md2pdf_persist_session_id';
+let currentSessionId = null;
+
+function bestEffortDeleteSession(sessionId) {
+    const sid = sessionId || currentSessionId;
+    if (!sid) return;
+    const url = getApiUrl(`/api/session/${sid}/delete`);
+
+    try {
+        if (navigator && typeof navigator.sendBeacon === 'function') {
+            // sendBeacon is designed for page unload and doesn't block.
+            const blob = new Blob([], { type: 'text/plain' });
+            navigator.sendBeacon(url, blob);
+            return;
+        }
+    } catch { /* ignore */ }
+
+    try {
+        // keepalive allows the request to outlive the page during unload.
+        fetch(url, { method: 'POST', keepalive: true }).catch(() => { /* ignore */ });
+    } catch { /* ignore */ }
+}
+
+function bestEffortPruneOtherSessions(keepSessionId) {
+    const sid = keepSessionId || currentSessionId;
+    if (!sid) return;
+    const url = getApiUrl('/api/sessions/prune');
+    try {
+        fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keep_session_id: sid })
+        }).catch(() => { /* ignore */ });
+    } catch { /* ignore */ }
+}
+
+function getServerOrigin() {
+    const protocol = window.location && window.location.protocol;
+    if (protocol === 'http:' || protocol === 'https:') return window.location.origin;
+    // When opened from disk (file://), use the default dev server.
+    return 'http://127.0.0.1:8010';
+}
+
+function getApiUrl(path) {
+    const base = getServerOrigin();
+    if (path.startsWith('http://') || path.startsWith('https://')) return path;
+    if (!path.startsWith('/')) path = '/' + path;
+    return base + path;
+}
+
+async function ensureSession() {
+    const candidates = [];
+    const fromSession = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    const fromPersist = localStorage.getItem(SESSION_PERSIST_KEY);
+    if (fromSession) candidates.push(fromSession);
+    if (fromPersist && fromPersist !== fromSession) candidates.push(fromPersist);
+
+    for (const existing of candidates) {
+        try {
+            const res = await fetch(getApiUrl(`/api/session/${existing}/touch`), { method: 'POST' });
+            if (res.ok) {
+                currentSessionId = existing;
+                sessionStorage.setItem(SESSION_STORAGE_KEY, existing);
+                localStorage.setItem(SESSION_PERSIST_KEY, existing);
+                bestEffortPruneOtherSessions(existing);
+                return existing;
+            }
+        } catch { /* ignore */ }
+
+        // If the session exists in storage but cannot be touched, it's likely stale.
+        // Best-effort delete so we don't accumulate abandoned workspaces.
+        bestEffortDeleteSession(existing);
+    }
+
+    const res = await fetch(getApiUrl('/api/session/new'), { method: 'POST' });
+    if (!res.ok) throw new Error('Could not create session');
+    const json = await res.json();
+    currentSessionId = json.session_id;
+    sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+    localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
+    bestEffortPruneOtherSessions(currentSessionId);
+    return currentSessionId;
+}
+
+async function resetSessionWorkspace() {
+    const sid = currentSessionId || sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (!sid) return ensureSession();
+    try {
+        const res = await fetch(getApiUrl(`/api/session/${sid}/reset`), { method: 'POST' });
+        if (!res.ok) throw new Error('Reset failed');
+        const json = await res.json();
+        currentSessionId = json.session_id;
+        sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+        localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
+        return currentSessionId;
+    } catch {
+        // Fall back to a new session.
+        sessionStorage.removeItem(SESSION_STORAGE_KEY);
+        currentSessionId = null;
+        return ensureSession();
+    }
+}
+
+function rewriteSessionImageUrlsInHtml(html, sessionId) {
+    const sid = sessionId || currentSessionId;
+    if (!sid) return html;
+    const origin = getServerOrigin();
+    // Convert src="images/foo.png" or src='images/foo.png' into an absolute URL.
+    return String(html || '').replace(
+        /(<img\b[^>]*?\ssrc=)(["'])(images\/[^"']+)(\2)/gi,
+        `$1$2${origin}/s/${sid}/$3$4`
+    );
+}
 
 function isCodeMirrorInstance(target) {
     return !!(target && typeof target.getDoc === 'function');
@@ -81,7 +235,8 @@ async function initDefaultMarkdownCss() {
     let css = '';
 
     if (window.location && (window.location.protocol === 'http:' || window.location.protocol === 'https:')) {
-        css = await loadCSS('markdown-styles.css');
+        // Cache-bust so edits to markdown-styles.css are reflected immediately.
+        css = await loadCSS('markdown-styles.css', true);
     }
     if (!css) {
         css = getLoadedStylesheetText('markdown-styles.css');
@@ -321,14 +476,38 @@ function downloadTextFile(filename, content) {
 }
 
 function saveMarkdownFile() {
+    // ZIP export (document.md + referenced images/ only)
     const content = embedCustomCssIntoMarkdown(getMarkdownValue(), getCustomCss());
     const suggested = (currentDocBaseName || 'document').trim() || 'document';
-    const entered = prompt('Save as (without extension):', suggested);
+    const entered = prompt('Save document as (without extension):', suggested);
     if (entered === null) return; // cancelled
     const base = guessBaseNameFromFilename(entered);
     currentDocBaseName = base;
-    downloadTextFile(`${base}.md`, content);
-    showToast('💾 Markdown saved');
+
+    (async () => {
+        try {
+            const sid = await ensureSession();
+            const res = await fetch(getApiUrl(`/api/session/${sid}/export-zip`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ markdown: content })
+            });
+            if (!res.ok) throw new Error('Export failed');
+            const blob = await res.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${base}.zip`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+            showToast('💾 Document saved (ZIP)');
+        } catch (e) {
+            console.error('ZIP export error:', e);
+            showToast('❌ Could not save ZIP. Is server.py running?');
+        }
+    })();
 }
 
 function getPdfFilenameFromUser() {
@@ -384,7 +563,8 @@ setMarkdownValue(defaultMarkdown);
 function updatePreview() {
     const markdownText = getMarkdownValue();
     const htmlContent = marked.parse(markdownText);
-    paginateContent(htmlContent);
+    const withSessionImages = rewriteSessionImageUrlsInHtml(htmlContent, currentSessionId);
+    paginateContent(withSessionImages);
 }
 
 function paginateContent(htmlContent) {
@@ -404,8 +584,9 @@ function paginateContent(htmlContent) {
 
     const pageStyle = window.getComputedStyle(measurePage);
     const paddingBottomPx = parseFloat(pageStyle.paddingBottom) || 0;
-    // Added a small safety margin (-2px) to prevent rounding errors from triggering extra pages
-    const maxBottom = measurePage.clientHeight - paddingBottomPx - 2;
+    // Added a small safety margin to prevent rounding/layout differences (screen vs print)
+    // from triggering unexpected overflows (which can yield extra blank pages in the PDF).
+    const maxBottom = measurePage.clientHeight - paddingBottomPx - 10;
 
     // Put content into a temporary wrapper to get top-level blocks.
     const tempWrapper = document.createElement('div');
@@ -415,6 +596,82 @@ function paginateContent(htmlContent) {
     const pages = [];
     let currentPageHTML = [];
     let currentPageElements = [];
+
+    const isEffectivelyEmptyBlock = (node) => {
+        if (!node) return true;
+        // If it contains real content elements, it's not empty.
+        if (node.querySelector) {
+            if (node.querySelector('img, table, pre, blockquote, ul, ol, hr')) return false;
+        }
+        const text = String(node.textContent || '').replace(/\s+/g, '');
+        if (text) return false;
+
+        // Treat <br>-only blocks as empty to avoid blank pages.
+        if (node.querySelector) {
+            const hasAnyElement = !!node.querySelector('*');
+            if (!hasAnyElement) return true;
+            const hasOnlyBr = Array.from(node.querySelectorAll('*')).every((el) => (el.tagName || '').toUpperCase() === 'BR');
+            if (hasOnlyBr) return true;
+        }
+
+        return true;
+    };
+
+    const trimLeadingBrOnPageStart = (node) => {
+        // When content is pushed to a new page, it can start with many <br> (e.g., user added
+        // <br> before an image). Those leading breaks make a page look blank.
+        // We remove leading <br> runs only when the element is the first thing on a page.
+        if (!node || !node.childNodes || node.childNodes.length === 0) return;
+
+        // Only trim on common wrappers (mostly <p>). Avoid touching headings.
+        const tag = (node.tagName || '').toUpperCase();
+        if (tag && /^H[1-6]$/.test(tag)) return;
+
+        while (node.firstChild) {
+            const first = node.firstChild;
+            if (first.nodeType === Node.ELEMENT_NODE && first.tagName && first.tagName.toUpperCase() === 'BR') {
+                node.removeChild(first);
+                continue;
+            }
+            // Remove whitespace-only text nodes.
+            if (first.nodeType === Node.TEXT_NODE && !String(first.textContent || '').trim()) {
+                node.removeChild(first);
+                continue;
+            }
+            break;
+        }
+    };
+
+    const splitElementBeforeFirstImage = (el) => {
+        if (!el || typeof el.querySelector !== 'function') return null;
+        const img = el.querySelector('img');
+        if (!img) return null;
+
+        // Find the closest direct child of el that contains the image.
+        let splitChild = img;
+        while (splitChild && splitChild.parentElement && splitChild.parentElement !== el) {
+            splitChild = splitChild.parentElement;
+        }
+        if (!splitChild || splitChild.parentElement !== el) return null;
+
+        const childNodes = Array.from(el.childNodes);
+        const splitIndex = childNodes.indexOf(splitChild);
+        if (splitIndex <= 0) return null;
+
+        const before = el.cloneNode(false);
+        const after = el.cloneNode(false);
+
+        for (let j = 0; j < childNodes.length; j++) {
+            const cloned = childNodes[j].cloneNode(true);
+            if (j < splitIndex) before.appendChild(cloned);
+            else after.appendChild(cloned);
+        }
+
+        const parts = [];
+        if (!isEffectivelyEmptyBlock(before)) parts.push(before);
+        if (!isEffectivelyEmptyBlock(after)) parts.push(after);
+        return parts.length >= 2 ? parts : null;
+    };
 
     // Helper: check if element is a heading
     const isHeading = (el) => {
@@ -434,7 +691,7 @@ function paginateContent(htmlContent) {
     };
 
     for (let i = 0; i < elements.length; i++) {
-        const element = elements[i];
+        let element = elements[i];
         const nextElement = elements[i + 1];
 
         // Check for manual page break
@@ -449,13 +706,22 @@ function paginateContent(htmlContent) {
         }
 
         // Append a clone into the measuring page.
+        const isStartingNewPage = measurePage.children.length === 0;
         const clone = element.cloneNode(true);
+        if (isStartingNewPage) {
+            trimLeadingBrOnPageStart(clone);
+            // If this block is only spacing, skip it entirely so it can't become a blank page.
+            if (isEffectivelyEmptyBlock(clone)) {
+                continue;
+            }
+        }
         measurePage.appendChild(clone);
 
         const used = getUsedHeightPx();
-        if (used <= maxBottom || measurePage.children.length === 1) {
-            currentPageHTML.push(element.outerHTML);
-            currentPageElements.push(element);
+        if (used <= maxBottom) {
+            // Keep trimmed HTML when it's the first element on the page.
+            currentPageHTML.push(isStartingNewPage ? clone.outerHTML : element.outerHTML);
+            currentPageElements.push(isStartingNewPage ? clone : element);
 
             // Check if this is a heading at the end of the page and if there's a next element
             // If so, try to fit the next element too to avoid orphaned headings
@@ -489,8 +755,38 @@ function paginateContent(htmlContent) {
             continue;
         }
 
+        // First element on a page overflowed. Try to split it before the first image
+        // instead of forcing an oversized block (which can lead to "blank" pages).
+        if (measurePage.children.length === 1) {
+            measurePage.removeChild(clone);
+            const parts = splitElementBeforeFirstImage(element);
+            if (parts) {
+                elements.splice(i, 1, ...parts);
+                i -= 1;
+                continue;
+            }
+
+            // Fall back to keeping it; it will be clipped by the fixed page height.
+            measurePage.appendChild(clone);
+            currentPageHTML.push(isStartingNewPage ? clone.outerHTML : element.outerHTML);
+            currentPageElements.push(isStartingNewPage ? clone : element);
+            continue;
+        }
+
         // Overflowed: move element to next page.
         measurePage.removeChild(clone);
+
+        // If this element would overflow even on an empty page, try to split it before the first image.
+        // This fixes the common case: many <br> above an image -> image should move to the next page.
+        if (currentPageHTML.length === 0) {
+            const parts = splitElementBeforeFirstImage(element);
+            if (parts) {
+                // Replace current element with the split parts and retry.
+                elements.splice(i, 1, ...parts);
+                i -= 1;
+                continue;
+            }
+        }
 
         // Check if the last element on current page is a heading
         if (currentPageElements.length > 0 && isHeading(currentPageElements[currentPageElements.length - 1])) {
@@ -520,6 +816,25 @@ function paginateContent(htmlContent) {
     }
 
     if (currentPageHTML.length) pages.push(currentPageHTML.join(''));
+
+    const isPageHtmlEffectivelyEmpty = (pageHtml) => {
+        const html = String(pageHtml || '');
+        if (!html.trim()) return true;
+        // Remove common whitespace-only constructs.
+        const stripped = html
+            .replace(/&nbsp;/gi, ' ')
+            .replace(/<br\s*\/?\s*>/gi, '')
+            .replace(/<\/?(p|div|span)[^>]*>/gi, '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/\s+/g, '')
+            .trim();
+        return stripped.length === 0;
+    };
+
+    // Guard: never start with an empty page.
+    while (pages.length > 1 && isPageHtmlEffectivelyEmpty(pages[0])) {
+        pages.shift();
+    }
 
     document.body.removeChild(measurePage);
 
@@ -552,14 +867,15 @@ function hideLoading() {
     loadingOverlay.classList.remove('active');
 }
 
-async function loadCSS(filename) {
+async function loadCSS(filename, cacheBust = false) {
     // Browsers block `fetch(file://...)` from a page opened via file:// (origin = "null").
     // When running from disk, rely on already-loaded stylesheets instead of fetching.
     if (typeof window !== 'undefined' && window.location && window.location.protocol === 'file:') {
         return '';
     }
     try {
-        const response = await fetch(filename);
+        const url = cacheBust ? `${filename}?v=${Date.now()}` : filename;
+        const response = await fetch(url, { cache: 'no-store' });
         return await response.text();
     } catch (error) {
         console.warn(`Could not load ${filename}:`, error);
@@ -759,15 +1075,17 @@ async function downloadPDF() {
                     }
                     .a4-page {
                         width: 210mm;
-                        min-height: 297mm;
+                        height: 297mm;
                         padding: 20mm;
                         box-sizing: border-box;
                         background: #ffffff;
                         color: #1a1a1a;
                         box-shadow: none !important;
                         margin: 0 !important;
+                        overflow: hidden;
                         page-break-after: always;
                         break-after: page;
+                        break-inside: avoid;
                     }
                     .a4-page:last-child { page-break-after: auto; break-after: auto; }
                     pre, blockquote, table, img { page-break-inside: avoid; break-inside: avoid; }
@@ -795,10 +1113,11 @@ async function downloadPDF() {
 
         // Try server-side PDF generation first (selectable text).
         try {
+            const sid = await ensureSession();
             const response = await fetch(getPdfApiUrl(), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ html: htmlForServer, filename: pdfFilename })
+                body: JSON.stringify({ html: htmlForServer, filename: pdfFilename, session_id: sid })
             });
 
             if (response.ok) {
@@ -930,9 +1249,15 @@ function clearEditor() {
     if (getMarkdownValue().trim() && !confirm('Are you sure you want to clear all content?')) {
         return;
     }
-    setMarkdownValue('');
-    updatePreview();
-    showToast('🗑️ Content cleared');
+    (async () => {
+        try {
+            await resetSessionWorkspace();
+        } catch { /* ignore */ }
+        setMarkdownValue('');
+        updatePreview();
+        showToast('🗑️ Content cleared');
+        autoSave();
+    })();
 }
 
 function uploadFile() {
@@ -945,13 +1270,59 @@ function handleFileSelect(event) {
 
     currentDocBaseName = guessBaseNameFromFilename(file.name);
 
-    const validTypes = ['.md', '.markdown', '.txt'];
+    const validTypes = ['.md', '.markdown', '.txt', '.zip'];
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
 
     if (!validTypes.includes(fileExtension)) {
-        showToast('⚠️ Please upload a Markdown file (.md, .markdown, or .txt)');
+        showToast('⚠️ Please upload a Markdown file or ZIP (.md, .markdown, .txt, or .zip)');
         return;
     }
+
+    if (fileExtension === '.zip') {
+        (async () => {
+            try {
+                // New document creation: delete the previous workspace.
+                if (currentSessionId) {
+                    try {
+                        await fetch(getApiUrl(`/api/session/${currentSessionId}/delete`), { method: 'POST' });
+                    } catch { /* ignore */ }
+                }
+                showToast('📦 Importing ZIP...');
+                const form = new FormData();
+                form.append('file', file, file.name);
+                const res = await fetch(getApiUrl('/api/import-zip'), { method: 'POST', body: form });
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || 'Import failed');
+                }
+                const json = await res.json();
+                currentSessionId = json.session_id;
+                sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+                localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
+
+                const extracted = extractCustomCssFromMarkdown(json.markdown);
+                setMarkdownValue(extracted.markdown);
+                userEditedCss = !!(extracted.css && normalizeCss(extracted.css) && normalizeCss(extracted.css) !== normalizeCss(defaultMarkdownCssText));
+                setCustomCssProgrammatic(extracted.css || defaultMarkdownCssText);
+                resetTextareaView(markdownEditor || markdownInput);
+                resetTextareaView(cssEditor || cssInput);
+                updatePreview();
+                autoSave();
+                showToast('✅ ZIP imported');
+            } catch (e) {
+                console.error('ZIP import error:', e);
+                showToast('❌ ZIP import failed');
+            } finally {
+                fileInput.value = '';
+            }
+        })();
+        return;
+    }
+
+    // New document creation (opening a new markdown file): reset server workspace.
+    (async () => {
+        try { await resetSessionWorkspace(); } catch { /* ignore */ }
+    })();
 
     const reader = new FileReader();
 
@@ -959,7 +1330,8 @@ function handleFileSelect(event) {
         const raw = e.target.result;
         const extracted = extractCustomCssFromMarkdown(raw);
         setMarkdownValue(extracted.markdown);
-        setCustomCss(extracted.css || defaultMarkdownCssText);
+        userEditedCss = !!(extracted.css && normalizeCss(extracted.css) && normalizeCss(extracted.css) !== normalizeCss(defaultMarkdownCssText));
+        setCustomCssProgrammatic(extracted.css || defaultMarkdownCssText);
         resetTextareaView(markdownEditor || markdownInput);
         resetTextareaView(cssEditor || cssInput);
         updatePreview();
@@ -973,6 +1345,62 @@ function handleFileSelect(event) {
 
     reader.readAsText(file);
     fileInput.value = '';
+}
+
+// ==================== Image Paste Handling ====================
+
+async function uploadPastedImageBlob(blob) {
+    const sid = await ensureSession();
+    const form = new FormData();
+    // Name doesn't matter server-side; extension inferred from content-type.
+    form.append('file', blob, 'pasted-image');
+    const res = await fetch(getApiUrl(`/api/session/${sid}/paste-image`), { method: 'POST', body: form });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Image upload failed');
+    }
+    const json = await res.json();
+    return json.relative_path;
+}
+
+function getActiveMarkdownEditorTarget() {
+    if (markdownEditor) return markdownEditor;
+    return markdownInput;
+}
+
+function bindImagePasteHandler() {
+    const targetEl = markdownEditor ? markdownEditor.getWrapperElement() : markdownInput;
+    if (!targetEl) return;
+
+    targetEl.addEventListener('paste', (event) => {
+        const clipboard = event.clipboardData;
+        if (!clipboard || !clipboard.items) return;
+
+        const items = Array.from(clipboard.items);
+        const imageItem = items.find((it) => it && typeof it.type === 'string' && it.type.startsWith('image/'));
+        if (!imageItem) return;
+
+        const blob = imageItem.getAsFile();
+        if (!blob) return;
+
+        event.preventDefault();
+
+        (async () => {
+            try {
+                const rel = await uploadPastedImageBlob(blob);
+                const snippet = `\n\n<img src="${rel}" width="500">\n\n`;
+
+                const editorTarget = getActiveMarkdownEditorTarget();
+                insertSnippet(editorTarget, snippet);
+                updatePreview();
+                autoSave();
+                showToast('🖼️ Image pasted');
+            } catch (e) {
+                console.error('Paste image error:', e);
+                showToast('❌ Could not paste image. Is server.py running?');
+            }
+        })();
+    });
 }
 
 function loadExample() {
@@ -1074,7 +1502,7 @@ Version: 1.0.0
 Built with: HTML, CSS, JavaScript
 Libraries: Marked.js, html2pdf.js
 
-This tool converts Markdown to beautifully formatted PDFs entirely in your browser. No data is sent to any server - everything happens locally!
+This tool runs locally. For selectable-text PDFs, pasted images, and ZIP import/export, it uses the local FastAPI server (server.py).
 
 Features:
 ✨ Real-time preview
@@ -1149,14 +1577,11 @@ function autoSave() {
         localStorage.setItem(STORAGE_KEYS.markdown, getMarkdownValue());
         localStorage.setItem(STORAGE_KEYS.pageNumbers, pageNumbers.checked);
 
+        // Intentionally do NOT persist CSS tab contents.
+        // Requirement: every page load must reflect markdown-styles.css exactly.
         if (cssInput) {
-            const currentCss = getCustomCss();
-            const isCustom = normalizeCss(currentCss) && normalizeCss(currentCss) !== normalizeCss(defaultMarkdownCssText);
-            if (isCustom) {
-                localStorage.setItem(STORAGE_KEYS.customCss, currentCss);
-            } else {
-                localStorage.removeItem(STORAGE_KEYS.customCss);
-            }
+            localStorage.removeItem(STORAGE_KEYS.customCss);
+            localStorage.removeItem(STORAGE_KEYS.savedDefaultCssHash);
         }
     } catch (error) {
         console.warn('Could not save to localStorage:', error);
@@ -1167,18 +1592,17 @@ function loadFromStorage() {
     try {
         const savedContent = localStorage.getItem(STORAGE_KEYS.markdown);
         const savedPageNumbers = localStorage.getItem(STORAGE_KEYS.pageNumbers);
-        const savedCustomCss = localStorage.getItem(STORAGE_KEYS.customCss);
         const savedZoom = localStorage.getItem(STORAGE_KEYS.previewZoom);
 
         if (savedContent) setMarkdownValue(savedContent);
         if (savedPageNumbers !== null) pageNumbers.checked = savedPageNumbers === 'true';
 
-        if (savedCustomCss !== null) {
-            setCustomCss(savedCustomCss);
-        } else {
-            // Default to the existing markdown-styles.css content in the CSS tab.
-            setCustomCss(defaultMarkdownCssText);
-        }
+        // Always load the current markdown-styles.css content into the CSS tab.
+        // Also clear any previously-saved overrides so disk edits are never masked.
+        userEditedCss = false;
+        localStorage.removeItem(STORAGE_KEYS.customCss);
+        localStorage.removeItem(STORAGE_KEYS.savedDefaultCssHash);
+        setCustomCssProgrammatic(defaultMarkdownCssText);
 
         if (savedZoom) {
             const zoomNum = Number(savedZoom);
@@ -1210,6 +1634,8 @@ function handleMarkdownInputChange() {
 
 function handleCssInputChange() {
     applyCustomCssToPreview();
+    if (suppressCssTracking) return;
+    userEditedCss = true;
     autoSave();
 }
 
@@ -1361,6 +1787,10 @@ if (tabMarkdown && tabCss) {
 
 document.addEventListener('keydown', handleKeyboardShortcuts);
 
+// Note: we intentionally do NOT delete the active session on tab close.
+// The latest session is persisted so pasted images keep working after reopening the app.
+// Old sessions are cleaned up via explicit reset/new-doc flows and server TTL cleanup.
+
 // Markdown editor key bindings are handled in bindEditorEvents.
 
 // Preview Panel Zoom Listeners
@@ -1398,9 +1828,13 @@ function setupHeaderFadeOnScroll() {
 (async () => {
     await initDefaultMarkdownCss();
     initCodeEditors();
+    try {
+        await ensureSession();
+    } catch { /* ignore: app still works without server */ }
     loadFromStorage();
     updatePreview();
     bindEditorEvents();
+    bindImagePasteHandler();
     applySavedEditorZoom();
     applySavedEditorSplit();
     setupEditorResize();

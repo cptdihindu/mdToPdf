@@ -1,0 +1,22 @@
+# Ignore session workspaces
+sessions/
+
+# Python cache and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# VS Code settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# ZIP and PDF exports
+*.zip
+*.pdf
+
+# Environment files
+.env
