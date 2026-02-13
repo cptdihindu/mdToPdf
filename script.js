@@ -303,6 +303,484 @@ function applyPageNumberVisibility() {
     previewContent.classList.toggle('show-page-numbers', !!(pageNumbers && pageNumbers.checked));
 }
 
+// ==================== Editor Context Menu ====================
+const editorContextMenu = document.getElementById('editor-context-menu');
+let editorContextMenuBound = false;
+let lastContextMenuTarget = null;
+let lastMarkdownSelectionState = null;
+let lastContextMenuShownAt = 0;
+let contextMenuHideTimer = null;
+
+function isMacPlatform() {
+    try {
+        const p = String(navigator.platform || '').toLowerCase();
+        const ua = String(navigator.userAgent || '').toLowerCase();
+        return p.includes('mac') || ua.includes('mac os');
+    } catch {
+        return false;
+    }
+}
+
+function formatKeyShortcut(key) {
+    // Display-only helper.
+    return isMacPlatform() ? `⌘${key}` : `Ctrl+${key}`;
+}
+
+function editorHasSelection(editorTarget) {
+    if (!editorTarget) return false;
+    if (isCodeMirrorInstance(editorTarget)) {
+        const selected = editorTarget.getDoc().getSelection();
+        return !!selected;
+    }
+    try {
+        return editorTarget.selectionStart !== editorTarget.selectionEnd;
+    } catch {
+        return false;
+    }
+}
+
+function getSelectionState(editorTarget) {
+    if (!editorTarget) return null;
+    if (isCodeMirrorInstance(editorTarget)) {
+        const doc = editorTarget.getDoc();
+        const text = doc.getSelection();
+        const ranges = doc.listSelections();
+        return {
+            kind: 'codemirror',
+            text: text || '',
+            ranges: Array.isArray(ranges) ? ranges : []
+        };
+    }
+    try {
+        const start = Number(editorTarget.selectionStart);
+        const end = Number(editorTarget.selectionEnd);
+        const value = String(editorTarget.value || '');
+        const text = (Number.isFinite(start) && Number.isFinite(end) && end > start) ? value.substring(start, end) : '';
+        return { kind: 'textarea', text, start, end };
+    } catch {
+        return null;
+    }
+}
+
+function saveLastSelectionFromEditor(editorTarget) {
+    const state = getSelectionState(editorTarget);
+    if (!state) return;
+    if (state.text) lastMarkdownSelectionState = state;
+}
+
+function restoreSelection(editorTarget, state) {
+    if (!editorTarget || !state) return;
+    if (isCodeMirrorInstance(editorTarget) && state.kind === 'codemirror') {
+        try {
+            const doc = editorTarget.getDoc();
+            if (Array.isArray(state.ranges) && state.ranges.length) {
+                doc.setSelections(state.ranges);
+            }
+            editorTarget.focus();
+        } catch { /* ignore */ }
+        return;
+    }
+    if (!isCodeMirrorInstance(editorTarget) && state.kind === 'textarea') {
+        try {
+            if (Number.isFinite(state.start) && Number.isFinite(state.end)) {
+                editorTarget.focus();
+                editorTarget.selectionStart = state.start;
+                editorTarget.selectionEnd = state.end;
+            }
+        } catch { /* ignore */ }
+    }
+}
+
+function applyHeadingToSelection(editorTarget, level) {
+    const lvl = Math.max(1, Math.min(6, Number(level) || 1));
+    const prefix = '#'.repeat(lvl) + ' ';
+
+    const rewriteLines = (text) => {
+        const raw = String(text || '');
+        const lines = raw.split('\n');
+        const allAlready = lines.length > 0 && lines.every(l => l.startsWith(prefix));
+        return lines
+            .map((line) => {
+                if (allAlready) {
+                    return line.startsWith(prefix) ? line.slice(prefix.length) : line;
+                }
+                // Normalize: strip any existing heading prefix then apply.
+                const without = line.replace(/^\s{0,3}#{1,6}\s+/, '');
+                return prefix + without;
+            })
+            .join('\n');
+    };
+
+    if (isCodeMirrorInstance(editorTarget)) {
+        const doc = editorTarget.getDoc();
+        const selected = doc.getSelection();
+        if (!selected) return;
+        doc.replaceSelection(rewriteLines(selected));
+        editorTarget.focus();
+        return;
+    }
+
+    const start = editorTarget.selectionStart;
+    const end = editorTarget.selectionEnd;
+    const value = editorTarget.value || '';
+    const selected = value.substring(start, end);
+    if (!selected) return;
+    const replacement = rewriteLines(selected);
+    if (!document.execCommand('insertText', false, replacement)) {
+        editorTarget.value = value.substring(0, start) + replacement + value.substring(end);
+    }
+    editorTarget.selectionStart = start;
+    editorTarget.selectionEnd = start + replacement.length;
+}
+
+function toggleLinePrefixOnSelection(editorTarget, prefix) {
+    const p = String(prefix || '');
+    if (!p) return;
+
+    const rewriteLines = (text) => {
+        const raw = String(text || '');
+        const lines = raw.split('\n');
+        const nonEmpty = lines.filter(l => l.trim().length > 0);
+        const allPrefixed = nonEmpty.length > 0 && nonEmpty.every(l => l.startsWith(p));
+
+        return lines
+            .map((line) => {
+                if (!line.trim()) return line;
+                if (allPrefixed) {
+                    return line.startsWith(p) ? line.slice(p.length) : line;
+                }
+                return p + line;
+            })
+            .join('\n');
+    };
+
+    if (isCodeMirrorInstance(editorTarget)) {
+        const doc = editorTarget.getDoc();
+        const selected = doc.getSelection();
+        if (!selected) return;
+        doc.replaceSelection(rewriteLines(selected));
+        editorTarget.focus();
+        return;
+    }
+
+    const start = editorTarget.selectionStart;
+    const end = editorTarget.selectionEnd;
+    const value = editorTarget.value || '';
+    const selected = value.substring(start, end);
+    if (!selected) return;
+    const replacement = rewriteLines(selected);
+    if (!document.execCommand('insertText', false, replacement)) {
+        editorTarget.value = value.substring(0, start) + replacement + value.substring(end);
+    }
+    editorTarget.selectionStart = start;
+    editorTarget.selectionEnd = start + replacement.length;
+}
+
+function wrapSelectionAsLink(editorTarget) {
+    const wrap = (sel) => `[${sel || 'text'}](https://example.com)`;
+
+    if (isCodeMirrorInstance(editorTarget)) {
+        const doc = editorTarget.getDoc();
+        const selected = doc.getSelection();
+        if (!selected) return;
+        doc.replaceSelection(wrap(selected));
+        editorTarget.focus();
+        return;
+    }
+
+    const start = editorTarget.selectionStart;
+    const end = editorTarget.selectionEnd;
+    const value = editorTarget.value || '';
+    const selected = value.substring(start, end);
+    if (!selected) return;
+    const replacement = wrap(selected);
+    if (!document.execCommand('insertText', false, replacement)) {
+        editorTarget.value = value.substring(0, start) + replacement + value.substring(end);
+    }
+    // Keep just the link text selected.
+    editorTarget.selectionStart = start + 1;
+    editorTarget.selectionEnd = start + 1 + selected.length;
+}
+
+function hideEditorContextMenu() {
+    if (!editorContextMenu) return;
+
+    // If already hidden, nothing to do.
+    if (editorContextMenu.hidden) {
+        lastContextMenuTarget = null;
+        return;
+    }
+
+    editorContextMenu.setAttribute('aria-hidden', 'true');
+    editorContextMenu.classList.remove('is-open');
+
+    if (contextMenuHideTimer) {
+        clearTimeout(contextMenuHideTimer);
+        contextMenuHideTimer = null;
+    }
+
+    // Let CSS transition run, then truly hide and clear content.
+    contextMenuHideTimer = setTimeout(() => {
+        editorContextMenu.hidden = true;
+        editorContextMenu.innerHTML = '';
+        lastContextMenuTarget = null;
+        contextMenuHideTimer = null;
+    }, 180);
+}
+
+function clampMenuPosition(x, y, menuEl) {
+    const rect = menuEl.getBoundingClientRect();
+    const padding = 8;
+    const maxX = window.innerWidth - rect.width - padding;
+    const maxY = window.innerHeight - rect.height - padding;
+    return {
+        x: Math.max(padding, Math.min(x, maxX)),
+        y: Math.max(padding, Math.min(y, maxY))
+    };
+}
+
+function showEditorContextMenuAt(x, y, editorTarget) {
+    if (!editorContextMenu) return;
+    const hasSelection = editorHasSelection(editorTarget);
+
+    if (contextMenuHideTimer) {
+        clearTimeout(contextMenuHideTimer);
+        contextMenuHideTimer = null;
+    }
+
+    lastContextMenuTarget = editorTarget;
+    editorContextMenu.innerHTML = '';
+
+    const actions = [];
+
+    // Always show formatting options
+    actions.push(
+        {
+            label: 'Bold',
+            shortcut: formatKeyShortcut('B'),
+            run: (t) => wrapOrInsert(t, '**', '**')
+        },
+        {
+            label: 'Italic',
+            shortcut: formatKeyShortcut('I'),
+            run: (t) => wrapOrInsert(t, '*', '*')
+        },
+        {
+            label: 'Inline code',
+            shortcut: formatKeyShortcut('E'),
+            run: (t) => wrapOrInsert(t, '`', '`')
+        },
+        {
+            label: 'Strikethrough',
+            shortcut: '~~ ~~',
+            run: (t) => wrapOrInsert(t, '~~', '~~')
+        },
+        {
+            label: 'Link',
+            shortcut: '[ ]( )',
+            run: (t) => wrapSelectionAsLink(t)
+        },
+        {
+            label: 'Heading 1',
+            shortcut: '#',
+            run: (t) => applyHeadingToSelection(t, 1)
+        },
+        {
+            label: 'Heading 2',
+            shortcut: '##',
+            run: (t) => applyHeadingToSelection(t, 2)
+        },
+        {
+            label: 'Heading 3',
+            shortcut: '###',
+            run: (t) => applyHeadingToSelection(t, 3)
+        },
+        {
+            label: 'Heading 4',
+            shortcut: '####',
+            run: (t) => applyHeadingToSelection(t, 4)
+        },
+        {
+            label: 'Quote',
+            shortcut: '> ',
+            run: (t) => toggleLinePrefixOnSelection(t, '> ')
+        },
+        {
+            label: 'Bullet list',
+            shortcut: '- ',
+            run: (t) => toggleLinePrefixOnSelection(t, '- ')
+        },
+        {
+            label: 'Numbered list',
+            shortcut: '1. ',
+            run: (t) => toggleLinePrefixOnSelection(t, '1. ')
+        },
+        {
+            label: 'Task list',
+            shortcut: '- [ ] ',
+            run: (t) => toggleLinePrefixOnSelection(t, '- [ ] ')
+        }
+    );
+
+    // TOC only when no text is selected
+    if (!hasSelection) {
+        actions.push({ separator: true });
+        actions.push(
+            {
+                label: 'Table of Contents',
+                shortcut: '[TOC]',
+                run: (t) => insertTableOfContents(t)
+            }
+        );
+    }
+
+    for (const action of actions) {
+        if (action.separator) {
+            const sep = document.createElement('div');
+            sep.className = 'menu-separator';
+            editorContextMenu.appendChild(sep);
+            continue;
+        }
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'menu-item';
+        btn.setAttribute('role', 'menuitem');
+        btn.innerHTML = `<span class="menu-label">${action.label}</span><span class="menu-shortcut">${action.shortcut}</span>`;
+
+        // Prevent selection from collapsing before we apply formatting.
+        btn.addEventListener('mousedown', (e) => e.preventDefault());
+        btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const target = lastContextMenuTarget || editorTarget;
+            try {
+                action.run(target);
+            } finally {
+                hideEditorContextMenu();
+                updatePreview();
+                autoSave();
+            }
+        });
+        editorContextMenu.appendChild(btn);
+    }
+
+    editorContextMenu.hidden = false;
+    editorContextMenu.setAttribute('aria-hidden', 'false');
+    editorContextMenu.classList.remove('is-open');
+    editorContextMenu.style.left = `${x}px`;
+    editorContextMenu.style.top = `${y}px`;
+
+    // Clamp after render so it doesn't overflow viewport.
+    const clamped = clampMenuPosition(x, y, editorContextMenu);
+    editorContextMenu.style.left = `${clamped.x}px`;
+    editorContextMenu.style.top = `${clamped.y}px`;
+
+    // Animate in on next frame so initial styles apply.
+    requestAnimationFrame(() => {
+        editorContextMenu.classList.add('is-open');
+    });
+}
+
+function bindEditorContextMenu() {
+    if (editorContextMenuBound) return;
+    if (!editorContextMenu) return;
+
+    const getMarkdownContextEl = () => {
+        if (markdownEditor) return markdownEditor.getWrapperElement();
+        return markdownInput;
+    };
+
+    const onContextMenu = (event, editorTarget) => {
+        const target = editorTarget || markdownEditor || markdownInput;
+        if (!target) return;
+
+        // Touchpad right-click can collapse selection before contextmenu.
+        // If selection is empty but we have a cached selection, restore it.
+        if (!editorHasSelection(target) && lastMarkdownSelectionState && lastMarkdownSelectionState.text) {
+            restoreSelection(target, lastMarkdownSelectionState);
+        }
+        // Allow context menu even without selection (for TOC, etc.)
+
+        // Prevent browser context menu.
+        event.preventDefault();
+        event.stopPropagation();
+
+        // Avoid double-open if multiple contextmenu events fire.
+        const now = Date.now();
+        if (now - lastContextMenuShownAt < 150) return;
+        lastContextMenuShownAt = now;
+
+        showEditorContextMenuAt(event.clientX, event.clientY, target);
+    };
+
+    const attach = () => {
+        const el = getMarkdownContextEl();
+        if (!el) return;
+        const target = markdownEditor || markdownInput;
+        // Cache selection early (helps with touchpad right-click).
+        el.addEventListener('pointerdown', () => saveLastSelectionFromEditor(target), true);
+        el.addEventListener('mousedown', () => saveLastSelectionFromEditor(target), true);
+    };
+
+    attach();
+
+    // Robust: intercept contextmenu at document level so the browser menu never leaks through
+    // when our custom menu should be shown.
+    document.addEventListener('contextmenu', (e) => {
+        const ctxEl = getMarkdownContextEl();
+        if (!ctxEl) return;
+        if (!e.target || !ctxEl.contains(e.target)) return;
+        const target = markdownEditor || markdownInput;
+        onContextMenu(e, target);
+    }, true);
+
+    // Global dismiss handlers
+    document.addEventListener('click', (e) => {
+        if (!editorContextMenu || editorContextMenu.hidden) return;
+        if (e.target && editorContextMenu.contains(e.target)) return;
+        hideEditorContextMenu();
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (!editorContextMenu || editorContextMenu.hidden) return;
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            hideEditorContextMenu();
+        }
+    });
+
+    window.addEventListener('resize', () => {
+        if (!editorContextMenu || editorContextMenu.hidden) return;
+        hideEditorContextMenu();
+    });
+
+    // Hide on scroll (both window scroll and editor-internal scroll).
+    window.addEventListener('scroll', () => {
+        if (!editorContextMenu || editorContextMenu.hidden) return;
+        hideEditorContextMenu();
+    }, { passive: true });
+
+    try {
+        const target = markdownEditor || markdownInput;
+        if (markdownEditor && typeof markdownEditor.getScrollerElement === 'function') {
+            const scroller = markdownEditor.getScrollerElement();
+            if (scroller) {
+                scroller.addEventListener('scroll', () => {
+                    if (!editorContextMenu || editorContextMenu.hidden) return;
+                    hideEditorContextMenu();
+                }, { passive: true });
+            }
+        } else if (target && typeof target.addEventListener === 'function') {
+            target.addEventListener('scroll', () => {
+                if (!editorContextMenu || editorContextMenu.hidden) return;
+                hideEditorContextMenu();
+            }, { passive: true });
+        }
+    } catch { /* ignore */ }
+
+    editorContextMenuBound = true;
+}
+
 function wrapOrInsert(textarea, left, right) {
     if (isCodeMirrorInstance(textarea)) {
         const doc = textarea.getDoc();
@@ -343,19 +821,39 @@ function wrapOrInsert(textarea, left, right) {
 function insertSnippet(textarea, snippet) {
     if (isCodeMirrorInstance(textarea)) {
         const doc = textarea.getDoc();
-        doc.replaceSelection(snippet, 'end');
-        textarea.focus();
+        const cursor = doc.getCursor();
+        doc.replaceRange(snippet, cursor);
         return;
     }
 
-    if (!document.execCommand('insertText', false, snippet)) {
-        const start = textarea.selectionStart;
-        const end = textarea.selectionEnd;
-        const value = textarea.value;
-        textarea.value = value.substring(0, start) + snippet + value.substring(end);
-        textarea.selectionStart = textarea.selectionEnd = start + snippet.length;
-    }
+    const start = textarea.selectionStart;
+    const end = textarea.selectionEnd;
+    const value = textarea.value;
+    textarea.value = value.substring(0, start) + snippet + value.substring(end);
+    textarea.selectionStart = textarea.selectionEnd = start + snippet.length;
+    textarea.focus();
 }
+
+function slugifyHeading(text) {
+    // Approximate the slug generation used by the preview renderer
+    // 1. Remove common markdown syntax (links, bold, italic)
+    let clean = String(text || '').replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+    clean = clean.replace(/[*_~`]/g, '');
+
+    // 2. Standard slugify
+    let t = clean.trim();
+    t = t.replace(/[\s\-_.]+/g, '-');
+    t = t.replace(/[^a-z0-9\-]/gi, '').toLowerCase();
+    return t.replace(/^-+|-+$/g, '');
+}
+
+function insertTableOfContents(editorTarget) {
+    insertSnippet(editorTarget, '[TOC]\n\n');
+    updatePreview();
+    autoSave();
+    showToast('📑 Table of Contents marker inserted');
+}
+
 
 function setEditorTab(tab, shouldFocus = true) {
     if (!markdownInput || !cssInput || !tabMarkdown || !tabCss) return;
@@ -476,7 +974,8 @@ function downloadTextFile(filename, content) {
 }
 
 function saveMarkdownFile() {
-    // ZIP export (document.md + referenced images/ only)
+    // Export document.
+    // Server returns a ZIP only when there are images to bundle; otherwise it returns plain .md.
     const content = embedCustomCssIntoMarkdown(getMarkdownValue(), getCustomCss());
     const suggested = (currentDocBaseName || 'document').trim() || 'document';
     const entered = prompt('Save document as (without extension):', suggested);
@@ -493,19 +992,22 @@ function saveMarkdownFile() {
                 body: JSON.stringify({ markdown: content })
             });
             if (!res.ok) throw new Error('Export failed');
+
+            const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+            const isZip = contentType.includes('application/zip');
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `${base}.zip`;
+            a.download = isZip ? `${base}.zip` : `${base}.md`;
             document.body.appendChild(a);
             a.click();
             a.remove();
             URL.revokeObjectURL(url);
-            showToast('💾 Document saved (ZIP)');
+            showToast(isZip ? '💾 Document saved (ZIP)' : '💾 Document saved (.md)');
         } catch (e) {
             console.error('ZIP export error:', e);
-            showToast('❌ Could not save ZIP. Is server.py running?');
+            showToast('❌ Could not save document. Is server.py running?');
         }
     })();
 }
@@ -563,8 +1065,125 @@ setMarkdownValue(defaultMarkdown);
 function updatePreview() {
     const markdownText = getMarkdownValue();
     const htmlContent = marked.parse(markdownText);
-    const withSessionImages = rewriteSessionImageUrlsInHtml(htmlContent, currentSessionId);
+    const strictAnchorsHtml = applyStrictHeadingIds(htmlContent);
+    const withTOC = replaceTOCMarkers(strictAnchorsHtml);
+    const withSessionImages = rewriteSessionImageUrlsInHtml(withTOC, currentSessionId);
     paginateContent(withSessionImages);
+}
+
+function replaceTOCMarkers(htmlText) {
+    // Find all [TOC] markers (they'll be wrapped in <p> tags by marked.js)
+    const tocMarkerRegex = /<p>\[TOC\]<\/p>/gi;
+
+    if (!tocMarkerRegex.test(htmlText)) {
+        return htmlText; // No TOC markers found
+    }
+
+    // Find the position of the first [TOC] marker
+    tocMarkerRegex.lastIndex = 0; // Reset regex
+    const tocMatch = tocMarkerRegex.exec(htmlText);
+    const tocPosition = tocMatch ? tocMatch.index : 0;
+
+    // Extract all headings from the HTML
+    const headingRe = /<h([1-6])([^>]*)id="([^"]+)"[^>]*>([\s\S]*?)<\/h\1>/gi;
+    const headings = [];
+    let match;
+
+    while ((match = headingRe.exec(htmlText)) !== null) {
+        const level = parseInt(match[1]);
+        const id = match[3];
+        const innerHtml = match[4];
+        const position = match.index; // Position in HTML
+
+        // Only include headings that appear AFTER the TOC marker
+        if (position <= tocPosition) {
+            continue;
+        }
+
+        // Extract text content from HTML
+        const tmp = document.createElement('div');
+        tmp.innerHTML = innerHtml;
+        const text = tmp.textContent || tmp.innerText || '';
+
+        headings.push({ level, id, text: text.trim(), position });
+    }
+
+    if (headings.length === 0) {
+        // No headings found after TOC, remove TOC markers
+        return htmlText.replace(tocMarkerRegex, '');
+    }
+
+
+    // Calculate page numbers by estimating content height
+    const estimatePageNumber = (position) => {
+        // Count approximate content before this heading
+        const contentBefore = htmlText.substring(0, position);
+
+        // Rough estimate: count major elements
+        const paragraphs = (contentBefore.match(/<p>/gi) || []).length;
+        const headingsCount = (contentBefore.match(/<h[1-6]/gi) || []).length;
+        const images = (contentBefore.match(/<img/gi) || []).length;
+        const codeBlocks = (contentBefore.match(/<pre>/gi) || []).length;
+        const lists = (contentBefore.match(/<ul>|<ol>/gi) || []).length;
+        const tables = (contentBefore.match(/<table>/gi) || []).length;
+
+        // Rough height estimates (in "units" that roughly equal 1 page = 35 units)
+        const estimatedHeight =
+            paragraphs * 1.5 +      // Each paragraph ~1.5 units
+            headingsCount * 2 +     // Each heading ~2 units
+            images * 10 +           // Each image ~10 units (200px default height)
+            codeBlocks * 6 +        // Each code block ~6 units
+            lists * 3 +             // Each list ~3 units
+            tables * 5;             // Each table ~5 units
+
+        return Math.max(1, Math.floor(estimatedHeight / 35) + 1);
+    };
+
+    // Generate TOC HTML
+    let tocHtml = '<div class="toc-wrapper">\n';
+    headings.forEach(h => {
+        const pageNum = estimatePageNumber(h.position);
+        tocHtml += `  <div class="toc-entry toc-level-${h.level}">
+    <a href="#${h.id}">
+      <span class="toc-text">${h.text}</span>
+      <span class="toc-spacer"></span>
+      <span class="toc-page">${pageNum}</span>
+    </a>
+  </div>\n`;
+    });
+    tocHtml += '</div>';
+
+    // Replace all [TOC] markers with the generated TOC
+    return htmlText.replace(tocMarkerRegex, tocHtml);
+}
+
+function applyStrictHeadingIds(htmlText) {
+    const headingRe = /<h([1-6])([^>]*)>([\s\S]*?)<\/h\1>/gi;
+
+    const slugifyBase = (innerHtml) => {
+        try {
+            const tmp = document.createElement('div');
+            tmp.innerHTML = String(innerHtml || '');
+            const text = String(tmp.textContent || '').trim();
+            let t = text.replace(/^#+\s*/, '').trim();
+            t = t.replace(/[\s\-_.]+/g, '-');
+            t = t.replace(/[^a-z0-9\-]/gi, '').toLowerCase();
+            return t.replace(/^-+|-+$/g, '');
+        } catch {
+            return '';
+        }
+    };
+
+    return String(htmlText || '').replace(headingRe, (full, level, attrs, inner) => {
+        const base = slugifyBase(inner);
+        if (!base) return full;
+
+        const lvl = String(level);
+        const anchor = (lvl === '1') ? base : `h${lvl}-${base}`;
+
+        const attrsNoId = String(attrs || '').replace(/\s+id\s*=\s*(['"]).*?\1/gi, '');
+        return `<h${lvl}${attrsNoId} id="${anchor}">${inner}</h${lvl}>`;
+    });
 }
 
 function paginateContent(htmlContent) {
@@ -676,6 +1295,18 @@ function paginateContent(htmlContent) {
     // Helper: check if element is a heading
     const isHeading = (el) => {
         return el && /^H[1-6]$/i.test(el.tagName);
+    };
+
+    // Helper: get heading anchor slug (matches backend)
+    const getHeadingAnchor = (el) => {
+        if (!isHeading(el)) return null;
+        const level = el.tagName.replace(/[^0-9]/g, '');
+        let text = el.textContent || '';
+        text = text.replace(/^#+\s*/, '').trim();
+        text = text.replace(/[\s\-_.]+/g, '-');
+        text = text.replace(/[^a-z0-9\-]/gi, '').toLowerCase();
+        const slug = text.replace(/^-+|-+$/g, '');
+        return `h${level}-${slug}`;
     };
 
     // Helper: compute used height up to the last child, including its margin-bottom.
@@ -850,6 +1481,43 @@ function paginateContent(htmlContent) {
         pageDiv.setAttribute('data-page', `Page ${index + 1}`);
         pageDiv.innerHTML = pageContent;
         previewContent.appendChild(pageDiv);
+    });
+
+    // Update TOC with real page numbers after pagination
+    updateTOCPageNumbers();
+}
+
+function updateTOCPageNumbers() {
+    // Find all TOC entries
+    const tocEntries = previewContent.querySelectorAll('.toc-entry a');
+    if (tocEntries.length === 0) return;
+
+    // Get all pages
+    const pages = previewContent.querySelectorAll('.a4-page');
+    if (pages.length === 0) return;
+
+    // For each TOC entry, find which page its target heading is on
+    tocEntries.forEach(tocLink => {
+        const href = tocLink.getAttribute('href');
+        if (!href || !href.startsWith('#')) return;
+
+        const targetId = href.substring(1); // Remove the #
+
+        // Find the heading with this ID across all pages
+        for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+            const page = pages[pageIndex];
+            const heading = page.querySelector(`#${CSS.escape(targetId)}`);
+
+            if (heading) {
+                // Found the heading on this page
+                const pageNum = pageIndex + 1;
+                const pageSpan = tocLink.querySelector('.toc-page');
+                if (pageSpan) {
+                    pageSpan.textContent = pageNum;
+                }
+                break;
+            }
+        }
     });
 }
 
@@ -1085,7 +1753,6 @@ async function downloadPDF() {
                         overflow: hidden;
                         page-break-after: always;
                         break-after: page;
-                        break-inside: avoid;
                     }
                     .a4-page:last-child { page-break-after: auto; break-after: auto; }
                     pre, blockquote, table, img { page-break-inside: avoid; break-inside: avoid; }
@@ -1388,7 +2055,7 @@ function bindImagePasteHandler() {
         (async () => {
             try {
                 const rel = await uploadPastedImageBlob(blob);
-                const snippet = `\n\n<img src="${rel}" width="500">\n\n`;
+                const snippet = `<img src="${rel}" height="200">`;
 
                 const editorTarget = getActiveMarkdownEditorTarget();
                 insertSnippet(editorTarget, snippet);
@@ -1721,9 +2388,22 @@ function bindEditorEvents() {
     if (markdownEditor) {
         markdownEditor.on('change', handleMarkdownInputChange);
         markdownEditor.on('keydown', (cm, event) => handleMarkdownEditorKeydown(event, cm));
+        // Cache the last non-empty selection so touchpad right-click can still format it.
+        markdownEditor.on('cursorActivity', () => saveLastSelectionFromEditor(markdownEditor));
+
+        try {
+            const wrapper = markdownEditor.getWrapperElement();
+            if (wrapper) {
+                wrapper.addEventListener('mouseup', () => saveLastSelectionFromEditor(markdownEditor));
+                wrapper.addEventListener('keyup', () => saveLastSelectionFromEditor(markdownEditor));
+            }
+        } catch { /* ignore */ }
     } else if (markdownInput) {
         markdownInput.addEventListener('input', handleMarkdownInputChange);
         markdownInput.addEventListener('keydown', (event) => handleMarkdownEditorKeydown(event, markdownInput));
+        markdownInput.addEventListener('mouseup', () => saveLastSelectionFromEditor(markdownInput));
+        markdownInput.addEventListener('keyup', () => saveLastSelectionFromEditor(markdownInput));
+        markdownInput.addEventListener('select', () => saveLastSelectionFromEditor(markdownInput));
     }
 
     if (cssEditor) {
@@ -1731,6 +2411,9 @@ function bindEditorEvents() {
     } else if (cssInput) {
         cssInput.addEventListener('input', handleCssInputChange);
     }
+
+    // Right-click context menu for markdown editor formatting.
+    bindEditorContextMenu();
 }
 
 btnDownload.addEventListener('click', downloadPDF);

@@ -7,6 +7,31 @@
     line-height: 1.6;
 }
 
+/* ==================== In-Page Links (Anchors) ==================== */
+/*
+How in-page links work in this app (Markdown -> HTML -> PDF):
+
+- Headings are assigned predictable HTML id="..." anchors.
+- Clicking a Markdown link like [Text](#some-anchor) navigates to the element with id="some-anchor".
+
+IMPORTANT: Anchors are "strict by heading level" (same number of hashes):
+
+- # Heading (H1) gets id="heading"        -> link with: (#heading)
+- ## Heading (H2) gets id="h2-heading"     -> link with: (#h2-heading)
+- ### Heading (H3) gets id="h3-heading"    -> link with: (#h3-heading)
+
+This prevents (#heading) from accidentally jumping to (## Heading).
+
+Slug rules ("Heading" -> "heading"):
+- lowercased
+- punctuation removed
+- spaces and common separators become '-'
+
+Examples:
+- ## API Reference -> id="h2-api-reference" -> link: (#h2-api-reference)
+- # Introduction   -> id="introduction"     -> link: (#introduction)
+*/
+
 
 /* ==================== Headings ==================== */
 
@@ -135,7 +160,7 @@ code {
     color: rgb(235, 235, 235);
 }
 
-:not(pre) > code {
+:not(pre)>code {
     background: #d8d8d8;
     padding: 2px 4px;
     border-radius: 3px;
@@ -148,8 +173,7 @@ code {
 img {
     display: block;
     max-width: 100%;
-    height: auto;
-    margin: auto;
+    margin: 20px auto;
 }
 
 
@@ -190,4 +214,81 @@ blockquote {
 .page-break {
     page-break-before: always;
     break-before: page;
+}
+
+/*
+Anchor reminder:
+Use (#introduction) for H1, and (#h2-introduction) / (#h3-...) for H2/H3/... headings.
+*//* ==================== Table of Contents ==================== */
+.toc-wrapper {
+    margin: 2rem 0;
+    font-family: var(--font-sans, sans-serif);
+}
+
+.toc-entry {
+    margin-bottom: 0.5rem;
+}
+
+.toc-entry a {
+    display: flex;
+    align-items: baseline;
+    text-decoration: none;
+    color: inherit;
+    width: 100%;
+}
+
+.toc-entry a:hover {
+    color: var(--primary-600, #5568d3);
+}
+
+.toc-text {
+    color: #2c3e50;
+    background: white;
+    /* Hide dots behind text */
+    padding-right: 5px;
+    position: relative;
+    z-index: 1;
+}
+
+.toc-spacer {
+    flex-grow: 1;
+    border-bottom: 1px dotted #ccc;
+    margin: 0 5px;
+    position: relative;
+    top: -5px;
+    /* Align formatting with baseline */
+}
+
+.toc-page {
+    color: #666;
+    background: white;
+    padding-left: 5px;
+    position: relative;
+    z-index: 1;
+}
+
+/* Indent based on level */
+.toc-level-1 {
+    margin-left: 0;
+    font-weight: 600;
+}
+
+.toc-level-2 {
+    margin-left: 1rem;
+}
+
+.toc-level-3 {
+    margin-left: 2rem;
+    font-size: 0.95em;
+}
+
+.toc-level-4 {
+    margin-left: 3rem;
+    font-size: 0.9em;
+}
+
+.toc-level-5,
+.toc-level-6 {
+    margin-left: 4rem;
+    font-size: 0.85em;
 }

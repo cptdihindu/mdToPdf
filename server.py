@@ -124,6 +124,45 @@ async def render_pdf(payload: PdfRequest, request: Request) -> Response:
     # Generate a selectable-text PDF by printing the provided HTML in headless Chromium.
     html = payload.html or ""
 
+    # Patch: inject strict heading IDs so that:
+    # - href="#introduction" matches only "# Introduction" (H1)
+    # - "## Introduction" becomes id="h2-introduction" and will NOT match "#introduction"
+    def add_heading_ids(html_text: str) -> str:
+        import re
+        import html as _html
+
+        heading_re = re.compile(r'<h([1-6])([^>]*)>(.*?)</h\1>', re.IGNORECASE | re.DOTALL)
+
+        def slugify_base(text: str) -> str:
+            # Prefer the visible text, not embedded markup.
+            t = re.sub(r'<[^>]+>', '', str(text or ''))
+            t = _html.unescape(t)
+            # Remove leading hashes/spaces
+            t = re.sub(r'^#+\s*', '', t.strip())
+            # Normalize separators to '-', drop punctuation, lowercase
+            t = re.sub(r'[\s\-_.]+', '-', t)
+            t = re.sub(r'[^a-z0-9\-]', '', t.lower())
+            return t.strip('-')
+
+        def repl(m: re.Match) -> str:
+            level, attrs, inner = m.group(1), m.group(2), m.group(3)
+            base = slugify_base(inner)
+            if not base:
+                return m.group(0)
+
+            # Strict scheme: H1 uses plain slug; H2+ uses hN-slug.
+            anchor = base if str(level) == '1' else f'h{level}-{base}'
+
+            # Remove any existing id=... (marked auto-generates ids; we want consistency)
+            attrs_no_id = re.sub(r'\s+id\s*=\s*(["\"]).*?\1', '', attrs, flags=re.IGNORECASE)
+            attrs_no_id = re.sub(r"\s+id\s*=\s*(['\"]).*?\1", '', attrs_no_id, flags=re.IGNORECASE)
+
+            return f'<h{level}{attrs_no_id} id="{anchor}">{inner}</h{level}>'
+
+        return heading_re.sub(repl, html_text)
+
+    html = add_heading_ids(html)
+
     # Ensure relative paths like images/... resolve correctly for the active session.
     # We do this by injecting a <base href="..."> tag, pointing at our session route.
     if payload.session_id:
@@ -335,6 +374,20 @@ async def export_zip(session_id: str, payload: SessionDocRequest, request: Reque
                 images_bytes[basename] = image_path.read_bytes()
             except Exception:
                 continue
+
+    # If there are no images to bundle, return a plain markdown file.
+    # This keeps exports simple and avoids pointless ZIP downloads.
+    if not images_bytes:
+        headers = {
+            "Content-Disposition": 'attachment; filename="document.md"',
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        return Response(
+            content=(markdown_text or "").encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers=headers,
+        )
 
     zip_bytes = build_export_zip(markdown_text, images_bytes)
 
