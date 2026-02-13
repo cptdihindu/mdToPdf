@@ -42,6 +42,7 @@ from mdpdf_backend.zip_utils import (
     rewrite_markdown_image_urls,
     write_imported_images,
 )
+from mdpdf_backend.layout_transform import transform_layout_rows
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -161,7 +162,41 @@ async def render_pdf(payload: PdfRequest, request: Request) -> Response:
 
         return heading_re.sub(repl, html_text)
 
+    # Best-effort splitting of very long code blocks so nothing overflows the page.
+    # NOTE: For true page margin enforcement, splitting by rendered height is needed.
+    # This backend splits by both line and character count for best effort.
+    def split_long_code_blocks(html_text: str, max_lines: int = 20, max_chars: int = 1000) -> str:
+        pre_re = re.compile(r"<pre(\s[^>]*)?>(.*?)</pre>", re.IGNORECASE | re.DOTALL)
+
+        def split_pre(m: re.Match) -> str:
+            attrs = m.group(1) or ""
+            code = m.group(2) or ""
+            lines = str(code).split("\n")
+            blocks: list[str] = []
+            i = 0
+            while i < len(lines):
+                chunk_lines: list[str] = []
+                chunk_chars = 0
+                while i < len(lines) and len(chunk_lines) < max_lines and (chunk_chars + len(lines[i])) <= max_chars:
+                    chunk_lines.append(lines[i])
+                    chunk_chars += len(lines[i])
+                    i += 1
+                joined = "\n".join(chunk_lines)
+                blocks.append(f"<pre{attrs}>{joined}</pre>")
+            return "".join(blocks)
+
+        return pre_re.sub(split_pre, html_text or "")
+
+    # Custom tag transforms (e.g., <row>/<col>) are done server-side so PDF output
+    # is stable across engines.
+    try:
+        html = transform_layout_rows(html).html
+    except Exception:
+        # Best-effort: never fail PDF generation due to custom-tag transforms.
+        pass
+
     html = add_heading_ids(html)
+    html = split_long_code_blocks(html, max_lines=20, max_chars=1000)
 
     # Ensure relative paths like images/... resolve correctly for the active session.
     # We do this by injecting a <base href="..."> tag, pointing at our session route.

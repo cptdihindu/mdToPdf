@@ -3,3 +3,4 @@ uvicorn[standard]==0.30.6
 playwright==1.49.1
 pydantic==2.10.4
 python-multipart==0.0.9
+beautifulsoup4==4.12.3

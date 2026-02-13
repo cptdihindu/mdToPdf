@@ -310,6 +310,9 @@ let lastContextMenuTarget = null;
 let lastMarkdownSelectionState = null;
 let lastContextMenuShownAt = 0;
 let contextMenuHideTimer = null;
+let editorContextSubmenu1 = null;
+let editorContextSubmenu2 = null;
+let contextSubmenuHideTimer = null;
 
 function isMacPlatform() {
     try {
@@ -365,7 +368,14 @@ function getSelectionState(editorTarget) {
 function saveLastSelectionFromEditor(editorTarget) {
     const state = getSelectionState(editorTarget);
     if (!state) return;
-    if (state.text) lastMarkdownSelectionState = state;
+    // Cache non-empty selection so touchpad right-click doesn't lose it.
+    // If selection is empty (user clicked elsewhere), clear the cache so we don't
+    // accidentally resurrect an old selection on right-click.
+    if (state.text) {
+        lastMarkdownSelectionState = state;
+    } else {
+        lastMarkdownSelectionState = null;
+    }
 }
 
 function restoreSelection(editorTarget, state) {
@@ -502,6 +512,145 @@ function wrapSelectionAsLink(editorTarget) {
     editorTarget.selectionEnd = start + 1 + selected.length;
 }
 
+function getLineIndentationFromValue(value, cursorIndex) {
+    const text = String(value || '');
+    const idx = Math.max(0, Math.min(text.length, Number(cursorIndex) || 0));
+    const lineStart = text.lastIndexOf('\n', idx - 1) + 1;
+    const line = text.slice(lineStart, idx);
+    const m = line.match(/^\s*/);
+    return m ? m[0] : '';
+}
+
+function buildLayoutRowSnippet(colCount, baseIndent) {
+    const cols = Math.max(2, Math.min(12, Number(colCount) || 2));
+    const indent0 = String(baseIndent || '');
+    const indent1 = indent0 + '    ';
+    const indent2 = indent1 + '    ';
+
+    const lines = [];
+    lines.push(`${indent0}<row>`);
+    for (let i = 0; i < cols; i++) {
+        lines.push(`${indent1}<col>`);
+        lines.push(`${indent2}`);
+        lines.push(`${indent1}</col>`);
+    }
+    lines.push(`${indent0}</row>`);
+
+    // Cursor: inside the first <col> on the blank indented line.
+    const cursorLineOffset = 2; // <row> (0), <col> (1), blank (2)
+    const cursorCh = indent2.length;
+    return {
+        text: lines.join('\n'),
+        cursorLineOffset,
+        cursorCh
+    };
+}
+
+function insertSnippetIntoEditor(editorTarget, snippet, cursorLineOffset, cursorCh) {
+    const text = String(snippet || '');
+
+    if (isCodeMirrorInstance(editorTarget)) {
+        const doc = editorTarget.getDoc();
+        const from = doc.getCursor('from');
+        const to = doc.getCursor('to');
+        doc.replaceRange(text, from, to, 'insert');
+        const line = from.line + (Number(cursorLineOffset) || 0);
+        const ch = Number(cursorCh) || 0;
+        doc.setCursor({ line, ch });
+        editorTarget.focus();
+        return;
+    }
+
+    // textarea
+    if (editorTarget && typeof editorTarget.value === 'string') {
+        const value = String(editorTarget.value || '');
+        const start = Number(editorTarget.selectionStart) || 0;
+        const end = Number(editorTarget.selectionEnd) || 0;
+        const next = value.slice(0, start) + text + value.slice(end);
+        editorTarget.value = next;
+
+        // Compute cursor offset inside inserted snippet.
+        const lines = text.split('\n');
+        const lineOffset = Math.max(0, Number(cursorLineOffset) || 0);
+        let offset = 0;
+        for (let i = 0; i < Math.min(lineOffset, lines.length); i++) {
+            offset += lines[i].length + 1; // +1 for '\n'
+        }
+        offset += Math.max(0, Number(cursorCh) || 0);
+        const cursorAbs = start + offset;
+        editorTarget.focus();
+        try {
+            editorTarget.selectionStart = cursorAbs;
+            editorTarget.selectionEnd = cursorAbs;
+        } catch { /* ignore */ }
+        return;
+    }
+
+    // contenteditable (best-effort)
+    try {
+        const sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) return;
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        const node = document.createTextNode(text);
+        range.insertNode(node);
+        // Place caret at end of inserted node (cursor placement inside snippet is non-trivial for plain text).
+        range.setStart(node, node.length);
+        range.setEnd(node, node.length);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    } catch { /* ignore */ }
+}
+
+function insertLayoutRow(editorTarget, colCount) {
+    const cols = Math.max(2, Math.min(4, Number(colCount) || 2));
+
+    if (isCodeMirrorInstance(editorTarget)) {
+        const doc = editorTarget.getDoc();
+        const cur = doc.getCursor();
+        const lineText = doc.getLine(cur.line) || '';
+        const baseIndent = (lineText.match(/^\s*/) || [''])[0];
+        const snip = buildLayoutRowSnippet(cols, baseIndent);
+
+        // If cursor is in the middle of non-whitespace, insert a newline first.
+        const left = lineText.slice(0, cur.ch);
+        const needsLeadNewline = left.trim().length > 0;
+        const prefix = needsLeadNewline ? `\n${baseIndent}` : '';
+
+        insertSnippetIntoEditor(
+            editorTarget,
+            prefix + snip.text,
+            snip.cursorLineOffset + (needsLeadNewline ? 1 : 0),
+            snip.cursorCh
+        );
+        return;
+    }
+
+    if (editorTarget && typeof editorTarget.value === 'string') {
+        const start = Number(editorTarget.selectionStart) || 0;
+        const value = String(editorTarget.value || '');
+        const baseIndent = getLineIndentationFromValue(value, start);
+        const snip = buildLayoutRowSnippet(cols, baseIndent);
+
+        const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+        const left = value.slice(lineStart, start);
+        const needsLeadNewline = left.trim().length > 0;
+        const prefix = needsLeadNewline ? `\n${baseIndent}` : '';
+
+        insertSnippetIntoEditor(
+            editorTarget,
+            prefix + snip.text,
+            snip.cursorLineOffset + (needsLeadNewline ? 1 : 0),
+            snip.cursorCh
+        );
+        return;
+    }
+
+    // contenteditable fallback
+    const snip = buildLayoutRowSnippet(cols, '');
+    insertSnippetIntoEditor(editorTarget, snip.text, snip.cursorLineOffset, snip.cursorCh);
+}
+
 function hideEditorContextMenu() {
     if (!editorContextMenu) return;
 
@@ -513,6 +662,22 @@ function hideEditorContextMenu() {
 
     editorContextMenu.setAttribute('aria-hidden', 'true');
     editorContextMenu.classList.remove('is-open');
+
+    const hideSubmenuEl = (el) => {
+        if (!el) return;
+        el.setAttribute('aria-hidden', 'true');
+        el.classList.remove('is-open');
+        el.hidden = true;
+        el.innerHTML = '';
+    };
+
+    if (contextSubmenuHideTimer) {
+        clearTimeout(contextSubmenuHideTimer);
+        contextSubmenuHideTimer = null;
+    }
+
+    hideSubmenuEl(editorContextSubmenu2);
+    hideSubmenuEl(editorContextSubmenu1);
 
     if (contextMenuHideTimer) {
         clearTimeout(contextMenuHideTimer);
@@ -551,6 +716,200 @@ function showEditorContextMenuAt(x, y, editorTarget) {
     lastContextMenuTarget = editorTarget;
     editorContextMenu.innerHTML = '';
 
+    const ensureSubmenuEl = (level) => {
+        const existing = level === 1 ? editorContextSubmenu1 : editorContextSubmenu2;
+        if (existing) return existing;
+
+        const el = document.createElement('div');
+        el.className = 'editor-context-menu editor-context-submenu';
+        el.setAttribute('role', 'menu');
+        el.setAttribute('aria-hidden', 'true');
+        el.hidden = true;
+        document.body.appendChild(el);
+
+        if (level === 1) editorContextSubmenu1 = el;
+        else editorContextSubmenu2 = el;
+        return el;
+    };
+
+    const isAnyMenuElement = (node) => {
+        if (!node) return false;
+        if (editorContextMenu && editorContextMenu.contains(node)) return true;
+        if (editorContextSubmenu1 && editorContextSubmenu1.contains(node)) return true;
+        if (editorContextSubmenu2 && editorContextSubmenu2.contains(node)) return true;
+        return false;
+    };
+
+    const hideSubmenusFrom = (level) => {
+        const hideEl = (el) => {
+            if (!el) return;
+            el.setAttribute('aria-hidden', 'true');
+            el.classList.remove('is-open');
+            el.hidden = true;
+            el.innerHTML = '';
+        };
+        if (level <= 2) hideEl(editorContextSubmenu2);
+        if (level <= 1) hideEl(editorContextSubmenu1);
+    };
+
+    const scheduleHideSubmenus = () => {
+        if (contextSubmenuHideTimer) {
+            clearTimeout(contextSubmenuHideTimer);
+            contextSubmenuHideTimer = null;
+        }
+        contextSubmenuHideTimer = setTimeout(() => {
+            contextSubmenuHideTimer = null;
+            hideSubmenusFrom(1);
+        }, 220);
+    };
+
+    const cancelHideSubmenus = () => {
+        if (contextSubmenuHideTimer) {
+            clearTimeout(contextSubmenuHideTimer);
+            contextSubmenuHideTimer = null;
+        }
+    };
+
+    const renderMenuInto = (menuEl, actions, opts) => {
+        const options = opts || {};
+        const submenuLevel = Number(options.submenuLevel) || 0;
+        const onLeaf = typeof options.onLeaf === 'function' ? options.onLeaf : null;
+
+        menuEl.innerHTML = '';
+
+        for (const action of actions) {
+            if (action.separator) {
+                const sep = document.createElement('div');
+                sep.className = 'menu-separator';
+                menuEl.appendChild(sep);
+                continue;
+            }
+
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'menu-item';
+            btn.setAttribute('role', 'menuitem');
+
+            const labelSpan = document.createElement('span');
+            labelSpan.className = 'menu-label';
+            labelSpan.textContent = String(action.label || '');
+
+            const shortcutSpan = document.createElement('span');
+            shortcutSpan.className = 'menu-shortcut';
+            const hasSubmenu = Array.isArray(action.submenu) && action.submenu.length > 0;
+            shortcutSpan.textContent = hasSubmenu ? '›' : (action.shortcut ? String(action.shortcut) : '');
+
+            btn.appendChild(labelSpan);
+            btn.appendChild(shortcutSpan);
+
+            btn.addEventListener('mousedown', (e) => e.preventDefault());
+
+            const openSubmenu = () => {
+                if (!hasSubmenu) return;
+                const level = submenuLevel + 1;
+                showSubmenu(level, action.submenu, btn);
+            };
+
+            if (hasSubmenu) {
+                btn.addEventListener('mouseenter', () => {
+                    cancelHideSubmenus();
+                    openSubmenu();
+                });
+                btn.addEventListener('pointerenter', () => {
+                    cancelHideSubmenus();
+                    openSubmenu();
+                });
+                btn.addEventListener('focus', () => {
+                    cancelHideSubmenus();
+                    openSubmenu();
+                });
+            } else {
+                btn.addEventListener('mouseenter', () => {
+                    // Moving within a menu should keep it open but close deeper levels.
+                    cancelHideSubmenus();
+                    if (submenuLevel === 0) hideSubmenusFrom(1);
+                    if (submenuLevel === 1) hideSubmenusFrom(2);
+                });
+            }
+
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                cancelHideSubmenus();
+                if (hasSubmenu) {
+                    openSubmenu();
+                    return;
+                }
+                const target = lastContextMenuTarget || editorTarget;
+                try {
+                    if (typeof action.run === 'function') action.run(target);
+                } finally {
+                    if (onLeaf) onLeaf();
+                }
+            });
+
+            menuEl.appendChild(btn);
+        }
+    };
+
+    const positionMenuNextToButton = (menuEl, anchorBtn) => {
+        const padding = 8;
+        const gap = 6;
+        const r = anchorBtn.getBoundingClientRect();
+
+        // Temporarily place so we can measure size.
+        menuEl.style.left = '0px';
+        menuEl.style.top = '0px';
+        const rect = menuEl.getBoundingClientRect();
+
+        let px = r.right + gap;
+        let py = r.top;
+
+        // If not enough room on the right, open to the left.
+        if (px + rect.width > window.innerWidth - padding) {
+            px = r.left - rect.width - gap;
+        }
+
+        // Clamp to viewport.
+        const clamped = clampMenuPosition(px, py, menuEl);
+        menuEl.style.left = `${clamped.x}px`;
+        menuEl.style.top = `${clamped.y}px`;
+    };
+
+    const showSubmenu = (level, actions, anchorBtn) => {
+        if (!anchorBtn) return;
+
+        // Hide deeper levels.
+        if (level <= 1) hideSubmenusFrom(2);
+        if (level <= 2) {
+            // ok
+        }
+
+        const menuEl = ensureSubmenuEl(level);
+        if (!menuEl) return;
+
+        menuEl.hidden = false;
+        menuEl.setAttribute('aria-hidden', 'false');
+        menuEl.classList.remove('is-open');
+
+        renderMenuInto(menuEl, actions, {
+            submenuLevel: level,
+            onLeaf: () => {
+                hideEditorContextMenu();
+                updatePreview();
+                autoSave();
+            }
+        });
+
+        positionMenuNextToButton(menuEl, anchorBtn);
+
+        // Keep menus open while hovering.
+        menuEl.addEventListener('mouseenter', cancelHideSubmenus);
+        menuEl.addEventListener('mouseleave', scheduleHideSubmenus);
+
+        requestAnimationFrame(() => menuEl.classList.add('is-open'));
+    };
+
+    // Root menu actions
     const actions = [];
 
     // Always show formatting options
@@ -634,35 +993,20 @@ function showEditorContextMenuAt(x, y, editorTarget) {
         );
     }
 
-    for (const action of actions) {
-        if (action.separator) {
-            const sep = document.createElement('div');
-            sep.className = 'menu-separator';
-            editorContextMenu.appendChild(sep);
-            continue;
-        }
-
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'menu-item';
-        btn.setAttribute('role', 'menuitem');
-        btn.innerHTML = `<span class="menu-label">${action.label}</span><span class="menu-shortcut">${action.shortcut}</span>`;
-
-        // Prevent selection from collapsing before we apply formatting.
-        btn.addEventListener('mousedown', (e) => e.preventDefault());
-        btn.addEventListener('click', (e) => {
-            e.preventDefault();
-            const target = lastContextMenuTarget || editorTarget;
-            try {
-                action.run(target);
-            } finally {
-                hideEditorContextMenu();
-                updatePreview();
-                autoSave();
+    actions.push({ separator: true });
+    actions.push({
+        label: 'Insert',
+        submenu: [
+            {
+                label: 'Layout Row',
+                submenu: [
+                    { label: '2 Columns', shortcut: '', run: (t) => insertLayoutRow(t, 2) },
+                    { label: '3 Columns', shortcut: '', run: (t) => insertLayoutRow(t, 3) },
+                    { label: '4 Columns', shortcut: '', run: (t) => insertLayoutRow(t, 4) }
+                ]
             }
-        });
-        editorContextMenu.appendChild(btn);
-    }
+        ]
+    });
 
     editorContextMenu.hidden = false;
     editorContextMenu.setAttribute('aria-hidden', 'false');
@@ -670,10 +1014,22 @@ function showEditorContextMenuAt(x, y, editorTarget) {
     editorContextMenu.style.left = `${x}px`;
     editorContextMenu.style.top = `${y}px`;
 
+    renderMenuInto(editorContextMenu, actions, {
+        submenuLevel: 0,
+        onLeaf: () => {
+            hideEditorContextMenu();
+            updatePreview();
+            autoSave();
+        }
+    });
+
     // Clamp after render so it doesn't overflow viewport.
     const clamped = clampMenuPosition(x, y, editorContextMenu);
     editorContextMenu.style.left = `${clamped.x}px`;
     editorContextMenu.style.top = `${clamped.y}px`;
+
+    editorContextMenu.addEventListener('mouseenter', cancelHideSubmenus);
+    editorContextMenu.addEventListener('mouseleave', scheduleHideSubmenus);
 
     // Animate in on next frame so initial styles apply.
     requestAnimationFrame(() => {
@@ -734,10 +1090,20 @@ function bindEditorContextMenu() {
         onContextMenu(e, target);
     }, true);
 
+    // If the user clicks outside the editor, clear cached selection so it can't
+    // be restored on a later right-click.
+    document.addEventListener('mousedown', (e) => {
+        if (!e || e.button !== 0) return;
+        const ctxEl = getMarkdownContextEl();
+        if (!ctxEl) return;
+        if (e.target && ctxEl.contains(e.target)) return;
+        lastMarkdownSelectionState = null;
+    }, true);
+
     // Global dismiss handlers
     document.addEventListener('click', (e) => {
         if (!editorContextMenu || editorContextMenu.hidden) return;
-        if (e.target && editorContextMenu.contains(e.target)) return;
+        if (e.target && (editorContextMenu.contains(e.target) || (editorContextSubmenu1 && editorContextSubmenu1.contains(e.target)) || (editorContextSubmenu2 && editorContextSubmenu2.contains(e.target)))) return;
         hideEditorContextMenu();
     });
 
@@ -1033,6 +1399,177 @@ marked.setOptions({
     xhtml: false
 });
 
+// ==================== Custom Layout Row Parsing (<row>/<col>) ====================
+// Marked treats HTML blocks as raw HTML and does NOT parse Markdown inside them.
+// That breaks fenced code blocks inside <col>.
+//
+// Fix: add a Marked block extension that recognizes <row>...</row> and renders it as
+// <div class="layout-row"><div class="layout-col">(parsed markdown)</div>...</div>
+
+function _isWsChar(ch) {
+    return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
+function _readTagName(src, i) {
+    let j = i;
+    while (j < src.length && _isWsChar(src[j])) j++;
+    let isClosing = false;
+    if (src[j] === '/') {
+        isClosing = true;
+        j++;
+        while (j < src.length && _isWsChar(src[j])) j++;
+    }
+    const start = j;
+    while (j < src.length) {
+        const c = src[j];
+        const ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '-' || c === '_';
+        if (!ok) break;
+        j++;
+    }
+    return { name: src.slice(start, j), isClosing, nameStart: start, nameEnd: j };
+}
+
+function _findTagEnd(src, ltIndex) {
+    // Find the next '>' (does not try to handle quotes perfectly; good enough for our simple tags).
+    return src.indexOf('>', ltIndex + 1);
+}
+
+function _findMatchingCloseTag(src, tagName, openTagEndIndex) {
+    const wanted = String(tagName || '').toLowerCase();
+    let depth = 1;
+    let i = openTagEndIndex + 1;
+
+    while (i < src.length) {
+        const lt = src.indexOf('<', i);
+        if (lt === -1) return -1;
+        const gt = _findTagEnd(src, lt);
+        if (gt === -1) return -1;
+
+        const inside = src.slice(lt + 1, gt);
+        const info = _readTagName(inside, 0);
+        const name = String(info.name || '').toLowerCase();
+
+        if (name === wanted) {
+            if (info.isClosing) depth -= 1;
+            else depth += 1;
+            if (depth === 0) return gt;
+        }
+
+        i = gt + 1;
+    }
+
+    return -1;
+}
+
+function _parseRowColumns(rawRowHtml) {
+    // rawRowHtml includes <row...>...</row>
+    const src = String(rawRowHtml || '');
+    const ltOpen = src.toLowerCase().indexOf('<row');
+    if (ltOpen === -1) return [];
+    const gtOpen = _findTagEnd(src, ltOpen);
+    if (gtOpen === -1) return [];
+    const ltClose = src.toLowerCase().lastIndexOf('</row');
+    if (ltClose === -1) return [];
+
+    const inner = src.slice(gtOpen + 1, ltClose);
+    const cols = [];
+
+    let i = 0;
+    while (i < inner.length) {
+        const lt = inner.toLowerCase().indexOf('<col', i);
+        if (lt === -1) break;
+        const gt = _findTagEnd(inner, lt);
+        if (gt === -1) break;
+        const endGt = _findMatchingCloseTag(inner, 'col', gt);
+        if (endGt === -1) break;
+        const ltEnd = inner.toLowerCase().lastIndexOf('</col', endGt);
+        if (ltEnd === -1) break;
+
+        const colInner = inner.slice(gt + 1, ltEnd);
+        cols.push(colInner);
+        i = endGt + 1;
+    }
+
+    return cols;
+}
+
+const layoutRowMarkedExtension = {
+    name: 'layoutRow',
+    level: 'block',
+    start(src) {
+        const lower = String(src || '').toLowerCase();
+        const idx = lower.indexOf('<row');
+        return idx >= 0 ? idx : undefined;
+    },
+    tokenizer(src) {
+        const s = String(src || '');
+        // Must start with optional whitespace then <row
+        const m = s.match(/^\s*<row\b/i);
+        if (!m) return;
+
+        const lt = s.toLowerCase().indexOf('<row');
+        const gt = _findTagEnd(s, lt);
+        if (gt === -1) return;
+        const endGt = _findMatchingCloseTag(s, 'row', gt);
+        if (endGt === -1) return;
+
+        const raw = s.slice(0, endGt + 1);
+        const cols = _parseRowColumns(raw);
+        if (!cols.length) return;
+
+        return {
+            type: 'layoutRow',
+            raw,
+            cols
+        };
+    },
+    renderer(token) {
+        const cols = Array.isArray(token.cols) ? token.cols : [];
+        const htmlCols = cols.map((md) => {
+            // Parse Markdown inside each column normally (supports fenced code blocks).
+            // IMPORTANT: content inside <col> is usually indented in authoring.
+            // In Markdown, 4+ leading spaces turns it into an indented code block,
+            // which would make HTML like <img ...> render as code. Dedent first.
+            const normalized = dedentMarkdownBlock(String(md || ''));
+            const inner = marked.parse(normalized);
+            return `<div class="layout-col">${inner}</div>`;
+        }).join('');
+        return `<div class="layout-row">${htmlCols}</div>`;
+    }
+};
+
+function dedentMarkdownBlock(text) {
+    const raw = String(text || '').replace(/\r\n?/g, '\n');
+    const lines = raw.split('\n');
+
+    // Drop leading/trailing blank lines so indentation detection is stable.
+    while (lines.length && !lines[0].trim()) lines.shift();
+    while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+    if (!lines.length) return '';
+
+    // Compute minimal indentation across non-empty lines.
+    let minIndent = Infinity;
+    for (const line of lines) {
+        if (!line.trim()) continue;
+        const m = line.match(/^[\t ]+/);
+        const indent = m ? m[0].length : 0;
+        if (indent < minIndent) minIndent = indent;
+        if (minIndent === 0) break;
+    }
+    if (!Number.isFinite(minIndent) || minIndent <= 0) {
+        return lines.join('\n');
+    }
+
+    return lines.map((line) => {
+        if (!line.trim()) return '';
+        return line.slice(minIndent);
+    }).join('\n');
+}
+
+try {
+    marked.use({ extensions: [layoutRowMarkedExtension] });
+} catch { /* ignore */ }
+
 // ==================== Initial Content ====================
 const defaultMarkdown = `# Welcome to MD2PDF
 
@@ -1069,6 +1606,119 @@ function updatePreview() {
     const withTOC = replaceTOCMarkers(strictAnchorsHtml);
     const withSessionImages = rewriteSessionImageUrlsInHtml(withTOC, currentSessionId);
     paginateContent(withSessionImages);
+}
+
+function preprocessMarkdownLayoutTags(markdownText) {
+    // IMPORTANT:
+    // <col> is a real HTML table element and is treated as a VOID tag by browsers.
+    // That means <col>...</col> will *not* contain content when parsed as HTML,
+    // collapsing our intended layout.
+    //
+    // Fix: rewrite <row>/<col> to safe custom elements (<md-row>/<md-col>) before
+    // Marked parses the markdown, while leaving fenced code blocks unchanged.
+
+    const src = String(markdownText || '');
+    const lines = src.split('\n');
+    let inFence = false;
+    let fenceMarker = null;
+
+    const out = [];
+    for (const line of lines) {
+        const trimmed = line.trimStart();
+        const fenceMatch = trimmed.match(/^(```+|~~~+)/);
+        if (fenceMatch) {
+            const marker = fenceMatch[1];
+            if (!inFence) {
+                inFence = true;
+                fenceMarker = marker[0];
+            } else {
+                // Close fence only if it matches the starting fence type.
+                if (fenceMarker && marker[0] === fenceMarker) {
+                    inFence = false;
+                    fenceMarker = null;
+                }
+            }
+            out.push(line);
+            continue;
+        }
+
+        if (inFence) {
+            out.push(line);
+            continue;
+        }
+
+        out.push(rewriteLayoutTagsInLine(line));
+    }
+
+    return out.join('\n');
+}
+
+function rewriteLayoutTagsInLine(line) {
+    const s = String(line || '');
+    let i = 0;
+    let out = '';
+
+    while (i < s.length) {
+        const ch = s[i];
+        if (ch !== '<') {
+            out += ch;
+            i++;
+            continue;
+        }
+
+        // Find end of tag.
+        const gt = s.indexOf('>', i + 1);
+        if (gt === -1) {
+            out += s.slice(i);
+            break;
+        }
+
+        const tagText = s.slice(i, gt + 1);
+        const rewritten = rewriteLayoutTag(tagText);
+        out += rewritten;
+        i = gt + 1;
+    }
+
+    return out;
+}
+
+function rewriteLayoutTag(tagText) {
+    const t = String(tagText || '');
+    // Only touch tags that look like <row ...>, </row>, <col ...>, </col>
+    // Best-effort parsing without regex-heavy nested logic.
+    if (!t.startsWith('<')) return t;
+
+    let j = 1;
+    while (j < t.length && (t[j] === ' ' || t[j] === '\t' || t[j] === '\n' || t[j] === '\r')) j++;
+
+    let isClosing = false;
+    if (t[j] === '/') {
+        isClosing = true;
+        j++;
+        while (j < t.length && (t[j] === ' ' || t[j] === '\t')) j++;
+    }
+
+    // Extract tag name.
+    let nameStart = j;
+    while (j < t.length) {
+        const c = t[j];
+        const isNameChar = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c === '-' || c === '_';
+        if (!isNameChar) break;
+        j++;
+    }
+    const name = t.slice(nameStart, j);
+    if (!name) return t;
+
+    const lower = name.toLowerCase();
+    let nextName = null;
+    if (lower === 'row') nextName = 'md-row';
+    if (lower === 'col') nextName = 'md-col';
+    if (!nextName) return t;
+
+    // Rebuild tag with same prefix/attrs.
+    const beforeName = t.slice(0, nameStart);
+    const afterName = t.slice(j);
+    return beforeName + nextName + afterName;
 }
 
 function replaceTOCMarkers(htmlText) {
@@ -1744,7 +2394,10 @@ async function downloadPDF() {
                     .a4-page {
                         width: 210mm;
                         height: 297mm;
-                        padding: 20mm;
+                        padding: var(--page-padding-top, var(--page-padding, 20mm))
+                                 var(--page-padding-right, var(--page-padding, 20mm))
+                                 var(--page-padding-bottom, var(--page-padding, 20mm))
+                                 var(--page-padding-left, var(--page-padding, 20mm));
                         box-sizing: border-box;
                         background: #ffffff;
                         color: #1a1a1a;
@@ -1836,7 +2489,10 @@ async function downloadPDF() {
                         .pdf-root .a4-page {
                             width: 210mm !important;
                             height: 297mm !important;
-                            padding: 20mm !important;
+                            padding: var(--page-padding-top, var(--page-padding, 20mm))
+                                     var(--page-padding-right, var(--page-padding, 20mm))
+                                     var(--page-padding-bottom, var(--page-padding, 20mm))
+                                     var(--page-padding-left, var(--page-padding, 20mm)) !important;
                             margin: 0 !important;
                             box-shadow: none !important;
                             box-sizing: border-box !important;
@@ -2309,8 +2965,8 @@ function handleCssInputChange() {
 function handleMarkdownEditorKeydown(event, target) {
     const editorTarget = target || markdownEditor || markdownInput;
 
-    // SHIFT + R wraps the selection in a right-float span
-    if (event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === 'R' || event.key === 'r')) {
+    // ALT + R wraps the selection in a right-float span
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && (event.key === 'R' || event.key === 'r')) {
         event.preventDefault();
         let hasSelection = false;
 

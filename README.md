@@ -62,6 +62,7 @@ When you upload that `.md` later, the app extracts the CSS back into the CSS tab
 - **Ctrl/Cmd + O**: Upload file
 - **Ctrl/Cmd + Enter**: Insert page break
 - **Alt + N**: Insert `<br>` line break
+- **Alt + R**: Float selected text right
 - **Ctrl/Cmd + B**: Bold
 - **Ctrl/Cmd + I**: Italic
 - **Ctrl/Cmd + E**: Inline code

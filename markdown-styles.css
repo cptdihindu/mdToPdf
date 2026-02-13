@@ -7,6 +7,27 @@
     line-height: 1.6;
 }
 
+/* ==================== Page "Margins" (A4 Padding) ==================== */
+/*
+In this app, the effective page margins are implemented as padding on `.a4-page`.
+
+To customize margins for BOTH preview and PDF output, override these variables in the CSS tab:
+
+:root {
+    --page-padding: 15mm;               /* all sides */
+    /* or per-side:
+    --page-padding-top: 10mm;
+    --page-padding-right: 15mm;
+    --page-padding-bottom: 20mm;
+    --page-padding-left: 15mm;
+    */
+}
+*/
+
+:root {
+    --page-padding: 20mm;
+}
+
 /* ==================== In-Page Links (Anchors) ==================== */
 /*
 How in-page links work in this app (Markdown -> HTML -> PDF):
@@ -189,6 +210,62 @@ blockquote {
 
 /* ==================== Layout Helpers ==================== */
 
+/* ==================== Custom Multi-Column Layout (<row>/<col>) ==================== */
+/*
+Supported authoring syntax (Markdown passthrough HTML):
+
+<row>
+    <col>Left</col>
+    <col>Right</col>
+</row>
+
+Backend will transform this into:
+<div class="layout-row"><div class="layout-col">...</div>...</div>
+
+For preview + browser-PDF fallback, we style both the classes AND the raw tags.
+*/
+
+.layout-row,
+row,
+md-row {
+    display: flex;
+    gap: 20px;
+    margin-bottom: 20px;
+    align-items: flex-start;
+    width: 100%;
+    /* Allow wrapping for small viewports (responsive) */
+    flex-wrap: wrap;
+
+    /* Print/PDF fragmentation hints */
+    page-break-inside: avoid;
+    break-inside: avoid-page;
+}
+
+.layout-col,
+md-col {
+    /* Equal-width columns (content should not dictate widths) */
+    flex: 1 1 0;
+    width: 0;
+    min-width: 0;
+    box-sizing: border-box;
+
+    /* Prevent long unbroken text from collapsing the layout */
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    hyphens: auto;
+    white-space: normal;
+    /* Let long content flow naturally across pages */
+    page-break-inside: auto;
+    break-inside: auto;
+}
+
+@media (max-width: 700px) {
+    .layout-row,
+    row {
+        flex-direction: column;
+    }
+}
+
 /* Float helper */
 .float-right {
     float: right;
@@ -219,7 +296,8 @@ blockquote {
 /*
 Anchor reminder:
 Use (#introduction) for H1, and (#h2-introduction) / (#h3-...) for H2/H3/... headings.
-*//* ==================== Table of Contents ==================== */
+*/
+/* ==================== Table of Contents ==================== */
 .toc-wrapper {
     margin: 2rem 0;
     font-family: var(--font-sans, sans-serif);

@@ -725,7 +725,10 @@ body {
     width: 210mm;
     height: 297mm;
     background: white;
-    padding: 20mm;
+    padding: var(--page-padding-top, var(--page-padding, 20mm))
+             var(--page-padding-right, var(--page-padding, 20mm))
+             var(--page-padding-bottom, var(--page-padding, 20mm))
+             var(--page-padding-left, var(--page-padding, 20mm));
     /* Standard margins */
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1), 0 8px 24px rgba(0, 0, 0, 0.15);
     margin-bottom: 2rem;
