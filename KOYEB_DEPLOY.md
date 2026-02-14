@@ -10,7 +10,7 @@
 
 **Build Command:**
 ```bash
-pip install -r requirements.txt && playwright install --with-deps chromium
+python -m playwright install --with-deps chromium
 ```
 
 **Run Command:**
@@ -46,7 +46,7 @@ Playwright/Chromium needs at least 512MB RAM. If you see crashes:
 **Option A: Via Koyeb Web UI**
 1. Go to Koyeb Dashboard → Create Service
 2. Connect your Git repository
-3. Set **Build Command**: `pip install -r requirements.txt && playwright install --with-deps chromium`
+3. Set **Build Command**: `python -m playwright install --with-deps chromium`
 4. Set **Run Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 5. Set **Port**: `8000`
 6. Deploy!
@@ -58,7 +58,7 @@ koyeb service create mdtopdf \
   --git github.com/yourusername/MdToPdf \
   --git-branch main \
   --ports 8000:http \
-  --build-command "pip install -r requirements.txt && playwright install --with-deps chromium" \
+  --build-command "python -m playwright install --with-deps chromium" \
   --run-command "uvicorn main:app --host 0.0.0.0 --port \$PORT" \
   --instance-type small
 ```
@@ -76,8 +76,9 @@ After deployment:
 - Fixed! `main.py` now exists in the root directory
 
 **Playwright/Chromium not found:**
-- Ensure build command includes `playwright install --with-deps chromium`
+- Ensure build command is: `python -m playwright install --with-deps chromium`
 - Check build logs for installation errors
+- Note: Koyeb's buildpack installs requirements.txt automatically, the build command only needs to install browsers
 
 **Out of Memory / Crashes:**
 - Upgrade instance type (Chromium is memory-intensive)

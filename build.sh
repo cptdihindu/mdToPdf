@@ -1,7 +1,8 @@
 #!/bin/bash
-# Koyeb build script - installs Playwright browsers after pip install
+# Koyeb build script - installs Playwright browsers
+# Note: requirements.txt is installed automatically by buildpack
 
 echo "Installing Playwright browsers..."
-playwright install --with-deps chromium
+python -m playwright install --with-deps chromium
 
 echo "Build complete!"
