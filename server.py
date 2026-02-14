@@ -492,5 +492,6 @@ if __name__ == "__main__":
 
     import uvicorn
     port = int(os.environ.get("PORT", "8010"))
-    uvicorn.run("server:app", host="127.0.0.1", port=port, reload=False)
+    host = os.environ.get("HOST", "0.0.0.0")
+    uvicorn.run("server:app", host=host, port=port, reload=False)
 

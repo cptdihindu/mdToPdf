@@ -2780,10 +2780,13 @@ function setPreviewZoom(zoomLevel) {
     if (supportsZoom) {
         previewContent.style.zoom = String(nextZoom);
         previewContent.style.transform = '';
+        previewContent.style.transformOrigin = '';
     } else {
         // Fallback (some browsers may ignore `zoom`).
         previewContent.style.zoom = '';
         previewContent.style.transform = `scale(${nextZoom})`;
+        // Make anchor math predictable for transform scaling.
+        previewContent.style.transformOrigin = '0 0';
     }
 
     previewContent.dataset.zoom = String(nextZoom);
@@ -2792,6 +2795,77 @@ function setPreviewZoom(zoomLevel) {
     try {
         localStorage.setItem(STORAGE_KEYS.previewZoom, String(nextZoom));
     } catch { /* ignore */ }
+}
+
+let lastPreviewPointer = null;
+
+function setPreviewZoomAnchored(zoomLevel, anchorClient) {
+    const wrapper = previewWrapper || document.querySelector('.preview-wrapper');
+    if (!wrapper || !previewContent) {
+        setPreviewZoom(zoomLevel);
+        return;
+    }
+
+    const minZoom = 0.5;
+    const maxZoom = 2;
+    const nextZoom = Math.min(maxZoom, Math.max(minZoom, zoomLevel));
+    const currentZoom = getCurrentPreviewZoom();
+    if (!Number.isFinite(currentZoom) || currentZoom <= 0) {
+        setPreviewZoom(nextZoom);
+        return;
+    }
+
+    // If no anchor is provided, use last known pointer in the preview,
+    // otherwise fall back to center of the wrapper.
+    const rect = wrapper.getBoundingClientRect();
+    const clientX = (anchorClient && Number.isFinite(anchorClient.clientX)) ? anchorClient.clientX
+        : (lastPreviewPointer && Number.isFinite(lastPreviewPointer.clientX)) ? lastPreviewPointer.clientX
+            : (rect.left + rect.width / 2);
+    const clientY = (anchorClient && Number.isFinite(anchorClient.clientY)) ? anchorClient.clientY
+        : (lastPreviewPointer && Number.isFinite(lastPreviewPointer.clientY)) ? lastPreviewPointer.clientY
+            : (rect.top + rect.height / 2);
+
+    const xInWrapper = clientX - rect.left;
+    const yInWrapper = clientY - rect.top;
+
+    const scrollLeft = wrapper.scrollLeft;
+    const scrollTop = wrapper.scrollTop;
+
+    const supportsZoom = typeof CSS !== 'undefined' && CSS.supports && CSS.supports('zoom', '1');
+
+    // Compute the document-space coordinate currently under the pointer.
+    let docX;
+    let docY;
+    if (supportsZoom) {
+        // Layout zoom scales scroll space.
+        docX = (scrollLeft + xInWrapper) / currentZoom;
+        docY = (scrollTop + yInWrapper) / currentZoom;
+    } else {
+        // Transform scale does not scale scroll space.
+        docX = scrollLeft + (xInWrapper / currentZoom);
+        docY = scrollTop + (yInWrapper / currentZoom);
+    }
+
+    setPreviewZoom(nextZoom);
+
+    // Apply scroll adjustment on next frame so layout/metrics settle.
+    requestAnimationFrame(() => {
+        let nextScrollLeft;
+        let nextScrollTop;
+
+        if (supportsZoom) {
+            nextScrollLeft = docX * nextZoom - xInWrapper;
+            nextScrollTop = docY * nextZoom - yInWrapper;
+        } else {
+            nextScrollLeft = docX - (xInWrapper / nextZoom);
+            nextScrollTop = docY - (yInWrapper / nextZoom);
+        }
+
+        const maxLeft = Math.max(0, wrapper.scrollWidth - wrapper.clientWidth);
+        const maxTop = Math.max(0, wrapper.scrollHeight - wrapper.clientHeight);
+        wrapper.scrollLeft = Math.min(maxLeft, Math.max(0, nextScrollLeft));
+        wrapper.scrollTop = Math.min(maxTop, Math.max(0, nextScrollTop));
+    });
 }
 
 function getCurrentPreviewZoom() {
@@ -3486,9 +3560,9 @@ function handleWheelZoom(event) {
     if (event.ctrlKey) {
         event.preventDefault();
         const delta = -event.deltaY;
-        const zoomFactor = 0.001;
+        const zoomFactor = 0.0025;
         const currentZoom = getCurrentPreviewZoom();
-        setPreviewZoom(currentZoom + delta * zoomFactor);
+        setPreviewZoomAnchored(currentZoom + delta * zoomFactor, { clientX: event.clientX, clientY: event.clientY });
     }
 }
 
@@ -3499,11 +3573,16 @@ function handleTouchZoom(event) {
         const touch2 = event.touches[1];
         const distance = Math.hypot(touch1.pageX - touch2.pageX, touch1.pageY - touch2.pageY);
 
+        const mid = {
+            clientX: (touch1.clientX + touch2.clientX) / 2,
+            clientY: (touch1.clientY + touch2.clientY) / 2
+        };
+
         if (lastTouchDistance > 0) {
             const delta = distance - lastTouchDistance;
-            const zoomFactor = 0.01;
+            const zoomFactor = 0.02;
             const currentZoom = getCurrentPreviewZoom();
-            setPreviewZoom(currentZoom + delta * zoomFactor);
+            setPreviewZoomAnchored(currentZoom + delta * zoomFactor, mid);
         }
         lastTouchDistance = distance;
     }
@@ -3769,13 +3848,13 @@ btnFullscreen.addEventListener('click', toggleFullscreen);
 if (btnZoomIn) {
     btnZoomIn.addEventListener('click', () => {
         const current = getCurrentPreviewZoom();
-        setPreviewZoom(Number((current + 0.1).toFixed(2)));
+        setPreviewZoomAnchored(Number((current + 0.1).toFixed(2)));
     });
 }
 if (btnZoomOut) {
     btnZoomOut.addEventListener('click', () => {
         const current = getCurrentPreviewZoom();
-        setPreviewZoom(Number((current - 0.1).toFixed(2)));
+        setPreviewZoomAnchored(Number((current - 0.1).toFixed(2)));
     });
 }
 
@@ -3844,6 +3923,9 @@ document.addEventListener('keydown', handleKeyboardShortcuts);
 // Preview Panel Zoom Listeners
 const previewWrapper = document.querySelector('.preview-wrapper');
 if (previewWrapper) {
+    previewWrapper.addEventListener('pointermove', (e) => {
+        lastPreviewPointer = { clientX: e.clientX, clientY: e.clientY };
+    }, { passive: true });
     previewWrapper.addEventListener('wheel', handleWheelZoom, { passive: false });
     previewWrapper.addEventListener('touchmove', handleTouchZoom, { passive: false });
     previewWrapper.addEventListener('touchend', resetTouchDistance);
