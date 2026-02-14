@@ -11,13 +11,21 @@ const btnZoomIn = document.getElementById('btn-zoom-in');
 const btnZoomOut = document.getElementById('btn-zoom-out');
 const btnEditorZoomIn = document.getElementById('btn-editor-zoom-in');
 const btnEditorZoomOut = document.getElementById('btn-editor-zoom-out');
+const btnNewDoc = document.getElementById('btn-new-doc');
 const btnSaveMd = document.getElementById('btn-save-md');
 const btnSaveMdFs = document.getElementById('btn-save-md-fs');
 const btnDownloadFs = document.getElementById('btn-download-fs');
 const fileInput = document.getElementById('file-input');
 const pageNumbers = document.getElementById('page-numbers');
+const startingPage = document.getElementById('starting-page');
+const startingNumber = document.getElementById('starting-number');
+const startingPageContainer = document.getElementById('starting-page-container');
+const startingNumberContainer = document.getElementById('starting-number-container');
+const btnCopyFormatting = document.getElementById('btn-copy-formatting');
+const formattingCodeBlock = document.getElementById('formatting-code-block');
 const loadingOverlay = document.getElementById('loading-overlay');
 const toast = document.getElementById('toast');
+const editorProjectStatus = document.getElementById('editor-project-status');
 
 const cssInput = document.getElementById('css-input');
 const tabMarkdown = document.getElementById('tab-markdown');
@@ -29,17 +37,445 @@ const editorWrapper = document.querySelector('.editor-wrapper');
 const STORAGE_KEYS = {
     markdown: 'md2pdf_content',
     pageNumbers: 'md2pdf_page_numbers',
+    startingPage: 'md2pdf_starting_page',
+    startingNumber: 'md2pdf_starting_number',
     customCss: 'md2pdf_custom_css',
     savedDefaultCssHash: 'md2pdf_saved_default_css_hash',
     previewZoom: 'md2pdf_preview_zoom',
     editorZoom: 'md2pdf_editor_zoom',
-    editorSplit: 'md2pdf_editor_split'
+    editorSplit: 'md2pdf_editor_split',
+
+    // MarkDownForge project persistence (refresh continuity)
+    mdfprojDisplayName: 'md2pdf_mdfproj_display_name',
+    mdfprojLastSavedHash: 'md2pdf_mdfproj_last_saved_hash',
+    mdfprojCss: 'md2pdf_mdfproj_css'
 };
 
 let defaultMarkdownCssText = '';
 let currentDocBaseName = 'document';
 let markdownEditor = null;
 let cssEditor = null;
+
+// ==================== MarkDownForge Project (.mdfproj) ====================
+// A .mdfproj is a ZIP with:
+// - document.md (Markdown + optional embedded CSS comment block)
+// - images/ (images referenced by markdown)
+// - meta.json
+
+let mdfprojFileHandle = null;
+let mdfprojDisplayName = '';
+let mdfprojIsModified = false;
+let mdfprojIsBusy = false;
+let suppressMdfprojModifiedTracking = false;
+
+// When working with a non-project import (.md/.zip), keep the original filename
+// visible in the editor header so the user always knows what they're editing.
+let nonProjectFileLabel = '';
+
+function isMdfprojActive() {
+    return !!(mdfprojFileHandle || (mdfprojDisplayName && String(mdfprojDisplayName).trim()));
+}
+
+function computeMdfprojContentHash() {
+    const content = embedCustomCssIntoMarkdown(getMarkdownValue(), getCustomCss());
+    return hashText(content);
+}
+
+function persistMdfprojStateSnapshot() {
+    // Persist name + CSS so refresh doesn't lose project identity/styling.
+    if (!isMdfprojActive()) return;
+    try {
+        const name = String(mdfprojDisplayName || '').trim();
+        if (name) localStorage.setItem(STORAGE_KEYS.mdfprojDisplayName, name);
+        localStorage.setItem(STORAGE_KEYS.mdfprojCss, String(getCustomCss() || ''));
+    } catch { /* ignore */ }
+}
+
+function makeFreshDocumentBaseName(prefix = 'document') {
+    const d = new Date();
+    const pad2 = (n) => String(n).padStart(2, '0');
+    const y = d.getFullYear();
+    const m = pad2(d.getMonth() + 1);
+    const day = pad2(d.getDate());
+    const hh = pad2(d.getHours());
+    const mm = pad2(d.getMinutes());
+    const ss = pad2(d.getSeconds());
+    return `${prefix}-${y}${m}${day}-${hh}${mm}${ss}`;
+}
+
+async function createNewDocument() {
+    // In-app new document flow.
+    // If there are unsaved changes, prompt the user to save (OK) or discard (Cancel).
+    if (shouldWarnBeforeClosingTab()) {
+        const saveFirst = confirm('You have unsaved changes. Save before creating a new document?');
+        if (saveFirst) {
+            try {
+                await overwriteMdfproj();
+            } catch (e) {
+                // User canceled Save As or save failed => keep current document.
+                console.warn('New document aborted due to save error/cancel:', e);
+                showToast('⚠️ New document canceled');
+                return;
+            }
+        }
+        // If user chose not to save: continue and discard.
+    }
+
+    try {
+        await resetSessionWorkspace();
+    } catch { /* ignore */ }
+
+    runWithoutMdfprojModifiedTracking(() => {
+        setMarkdownValue('');
+        userEditedCss = false;
+        setCustomCssProgrammatic(defaultMarkdownCssText);
+    });
+
+    // New doc should not look/behave like the previous imported file.
+    nonProjectFileLabel = '';
+
+    setMdfprojHandle(null);
+    mdfprojDisplayName = '';
+    setMdfprojModified(false);
+    clearMdfprojPersistedState();
+
+    // Use a unique default filename so Save As won't suggest overwriting the previous doc.
+    currentDocBaseName = makeFreshDocumentBaseName('document');
+
+    resetTextareaView(markdownEditor || markdownInput);
+    resetTextareaView(cssEditor || cssInput);
+    updatePreview();
+    autoSave();
+    showToast('📄 New document');
+}
+
+function persistMdfprojAsLastSaved() {
+    try {
+        persistMdfprojStateSnapshot();
+        localStorage.setItem(STORAGE_KEYS.mdfprojLastSavedHash, computeMdfprojContentHash());
+    } catch { /* ignore */ }
+}
+
+function clearMdfprojPersistedState() {
+    try {
+        localStorage.removeItem(STORAGE_KEYS.mdfprojDisplayName);
+        localStorage.removeItem(STORAGE_KEYS.mdfprojLastSavedHash);
+        localStorage.removeItem(STORAGE_KEYS.mdfprojCss);
+    } catch { /* ignore */ }
+}
+
+function supportsFileSystemAccessApi() {
+    // Requires secure context (https or localhost) in Chromium-based browsers.
+    return !!(window && window.isSecureContext && window.showSaveFilePicker && window.showOpenFilePicker);
+}
+
+function stripMdfprojExtension(filename) {
+    const raw = String(filename || '').trim();
+    if (!raw) return '';
+    const justName = raw.split(/[\\/]/).pop() || raw;
+    return justName.toLowerCase().endsWith('.mdfproj') ? justName.slice(0, -'.mdfproj'.length) : guessBaseNameFromFilename(justName);
+}
+
+function setMdfprojHandle(handle) {
+    mdfprojFileHandle = handle || null;
+    if (mdfprojFileHandle && mdfprojFileHandle.name) {
+        mdfprojDisplayName = stripMdfprojExtension(mdfprojFileHandle.name) || mdfprojDisplayName;
+    }
+    persistMdfprojStateSnapshot();
+    updateMdfprojStatusUi();
+}
+
+function setMdfprojDisplayNameFromFilename(filename) {
+    const base = stripMdfprojExtension(filename);
+    if (base) mdfprojDisplayName = base;
+    persistMdfprojStateSnapshot();
+    updateMdfprojStatusUi();
+}
+
+function setMdfprojModified(isModified) {
+    mdfprojIsModified = !!isModified;
+    updateMdfprojStatusUi();
+}
+
+function markMdfprojModified() {
+    if (suppressMdfprojModifiedTracking) return;
+    if (mdfprojIsBusy) return;
+    if (!mdfprojIsModified) {
+        mdfprojIsModified = true;
+        updateMdfprojStatusUi();
+    }
+}
+
+function updateMdfprojStatusUi() {
+    if (!editorProjectStatus) return;
+
+    const isProject = !!(mdfprojFileHandle || (mdfprojDisplayName && String(mdfprojDisplayName).trim()));
+
+    if (isProject) {
+        const nameWithExt = mdfprojFileHandle
+            ? String(mdfprojFileHandle.name || '').trim()
+            : `${String(mdfprojDisplayName || 'Document').trim() || 'Document'}.mdfproj`;
+        editorProjectStatus.textContent = mdfprojIsModified ? `${nameWithExt}*` : nameWithExt;
+        return;
+    }
+
+    if (nonProjectFileLabel) {
+        const label = String(nonProjectFileLabel).trim();
+        editorProjectStatus.textContent = mdfprojIsModified ? `${label}*` : label;
+        return;
+    }
+
+    editorProjectStatus.textContent = 'Unsaved File';
+}
+
+function shouldWarnBeforeClosingTab() {
+    // If a save/import is in progress, avoid trapping the user.
+    if (mdfprojIsBusy) return false;
+
+    // Primary signal: modified tracking.
+    if (mdfprojIsModified) return true;
+
+    // If the user has already saved/imported a project (name known) and there are no
+    // unsaved modifications, do not warn.
+    if (!mdfprojFileHandle && mdfprojDisplayName && !mdfprojIsModified) return false;
+
+    // Secondary signal: an unsaved doc that has content (new or imported without a file handle).
+    // This covers cases where the file handle is unavailable (non-secure context, non-Chromium, etc.).
+    if (!mdfprojFileHandle) {
+        const markdownText = String(getMarkdownValue() || '').trim();
+        if (markdownText) return true;
+
+        // If user customized CSS (vs. default), consider that meaningful work too.
+        const cssText = normalizeCss(getCustomCss());
+        const defaultCss = normalizeCss(defaultMarkdownCssText);
+        if (cssText && cssText !== defaultCss) return true;
+    }
+
+    return false;
+}
+
+function bindBeforeUnloadPrompt() {
+    // Browser limitation: you cannot show a custom "Save / Don't Save" dialog.
+    // This triggers the built-in "Leave site?" confirmation when there are unsaved changes.
+    window.addEventListener('beforeunload', (event) => {
+        if (!shouldWarnBeforeClosingTab()) return;
+        event.preventDefault();
+        // Chrome/Edge require returnValue to be set to trigger the prompt.
+        event.returnValue = '';
+    });
+}
+
+function runWithoutMdfprojModifiedTracking(fn) {
+    suppressMdfprojModifiedTracking = true;
+    try {
+        return fn();
+    } finally {
+        suppressMdfprojModifiedTracking = false;
+    }
+}
+
+function extractFirstHeadingTitle(markdownText) {
+    const src = String(markdownText || '').replace(/\r\n/g, '\n');
+    const lines = src.split('\n');
+    for (const line of lines) {
+        const m = line.match(/^\s*#\s+(.+?)\s*$/);
+        if (m && m[1]) return m[1].trim();
+    }
+    return '';
+}
+
+function extractImageRelPathsFromMarkdown(markdownText) {
+    const src = String(markdownText || '');
+    const found = new Set();
+
+    // Markdown image syntax: ![alt](path "title")
+    for (const m of src.matchAll(/!\[[^\]]*\]\(([^\)\s]+)(?:\s+"[^"]*")?\)/g)) {
+        const path = String(m[1] || '').trim();
+        if (path.toLowerCase().startsWith('images/')) found.add(path);
+    }
+
+    // HTML: <img src="...">
+    for (const m of src.matchAll(/<img\b[^>]*?\ssrc=("|')([^"']+)(\1)[^>]*>/gi)) {
+        const path = String(m[2] || '').trim();
+        if (path.toLowerCase().startsWith('images/')) found.add(path);
+    }
+
+    return Array.from(found);
+}
+
+async function fetchSessionImageBlob(relativePath) {
+    const rel = String(relativePath || '').replace(/\\/g, '/');
+    if (!rel) throw new Error('Missing image path');
+
+    const sid = currentSessionId || await ensureSession();
+    const url = `${getServerOrigin()}/s/${sid}/${rel}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Could not fetch image: ${rel}`);
+    return await res.blob();
+}
+
+async function buildMdfprojZipBlob() {
+    if (typeof JSZip === 'undefined') {
+        throw new Error('JSZip is not available');
+    }
+
+    const zip = new JSZip();
+
+    const markdownWithCss = embedCustomCssIntoMarkdown(getMarkdownValue(), getCustomCss());
+    zip.file('document.md', markdownWithCss);
+
+    const title = extractFirstHeadingTitle(markdownWithCss) || mdfprojDisplayName || currentDocBaseName || 'My Markdown Document';
+    const meta = {
+        title,
+        lastSaved: new Date().toISOString(),
+        version: '1.0',
+        author: 'MarkDownForge User'
+    };
+    zip.file('meta.json', JSON.stringify(meta, null, 2));
+
+    const imageRelPaths = extractImageRelPathsFromMarkdown(markdownWithCss);
+    if (imageRelPaths.length) {
+        // Ensure session exists; images are stored server-side in the current app.
+        await ensureSession();
+        for (const rel of imageRelPaths) {
+            const blob = await fetchSessionImageBlob(rel);
+            zip.file(rel, blob);
+        }
+    }
+
+    return await zip.generateAsync({ type: 'blob' });
+}
+
+async function writeBlobToFileHandle(fileHandle, blob) {
+    const writable = await fileHandle.createWritable();
+    try {
+        await writable.write(blob);
+    } finally {
+        await writable.close();
+    }
+}
+
+async function saveMdfprojAs() {
+    // First-time save: show Save As.
+    if (!supportsFileSystemAccessApi()) {
+        // Fallback: download, but we can't keep a writable handle for overwrite.
+        const blob = await buildMdfprojZipBlob();
+        const base = (mdfprojDisplayName || currentDocBaseName || 'project').trim() || 'project';
+        downloadBlobAsFile(blob, `${base}.mdfproj`);
+        setMdfprojDisplayNameFromFilename(`${base}.mdfproj`);
+        setMdfprojModified(false);
+        persistMdfprojAsLastSaved();
+        showToast('💾 Project downloaded (.mdfproj). Use Chrome/Edge for overwrite saves.');
+        return;
+    }
+
+    const base = (mdfprojDisplayName || currentDocBaseName || 'project').trim() || 'project';
+    const handle = await window.showSaveFilePicker({
+        suggestedName: `${base}.mdfproj`,
+        types: [
+            {
+                description: 'MarkDownForge Project',
+                accept: { 'application/zip': ['.mdfproj'] }
+            }
+        ]
+    });
+    setMdfprojHandle(handle);
+    setMdfprojDisplayNameFromFilename(handle.name);
+    await overwriteMdfproj();
+}
+
+async function overwriteMdfproj() {
+    if (!mdfprojFileHandle) {
+        return saveMdfprojAs();
+    }
+
+    if (mdfprojIsBusy) return;
+    mdfprojIsBusy = true;
+    try {
+        const blob = await buildMdfprojZipBlob();
+        await writeBlobToFileHandle(mdfprojFileHandle, blob);
+        setMdfprojModified(false);
+        persistMdfprojAsLastSaved();
+        showToast('💾 Project saved');
+    } finally {
+        mdfprojIsBusy = false;
+    }
+}
+
+function downloadBlobAsFile(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+async function importMdfprojFromFile(file, fileHandle) {
+    if (typeof JSZip === 'undefined') {
+        showToast('❌ Could not import .mdfproj (JSZip missing)');
+        return;
+    }
+
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+
+    const docFile = zip.file('document.md');
+    if (!docFile) throw new Error('Missing document.md in .mdfproj');
+
+    const markdownWithCss = await docFile.async('string');
+    const extracted = extractCustomCssFromMarkdown(markdownWithCss);
+
+    // Reset server workspace so imported images don't collide with previous sessions.
+    await resetSessionWorkspace();
+
+    // Upload images to the current session and rewrite markdown to the new relative paths.
+    // (Server assigns filenames; we remap references.)
+    let rewrittenMarkdown = extracted.markdown;
+    const imageFiles = Object.values(zip.files).filter((f) => f && !f.dir && String(f.name || '').toLowerCase().startsWith('images/'));
+
+    const guessMimeFromImagePath = (path) => {
+        const p = String(path || '').toLowerCase();
+        if (p.endsWith('.png')) return 'image/png';
+        if (p.endsWith('.jpg') || p.endsWith('.jpeg')) return 'image/jpeg';
+        if (p.endsWith('.gif')) return 'image/gif';
+        if (p.endsWith('.webp')) return 'image/webp';
+        if (p.endsWith('.svg')) return 'image/svg+xml';
+        return 'image/png';
+    };
+
+    if (imageFiles.length) {
+        showToast('📦 Importing project images...');
+        for (const entry of imageFiles) {
+            const oldRel = String(entry.name || '').replace(/\\/g, '/');
+            const buf = await entry.async('arraybuffer');
+            const blob = new Blob([buf], { type: guessMimeFromImagePath(oldRel) });
+            const newRel = await uploadPastedImageBlob(blob);
+            // Replace all occurrences of the old relative path.
+            rewrittenMarkdown = rewrittenMarkdown.split(oldRel).join(newRel);
+        }
+    }
+
+    runWithoutMdfprojModifiedTracking(() => {
+        setMarkdownValue(rewrittenMarkdown);
+        userEditedCss = !!(extracted.css && normalizeCss(extracted.css) && normalizeCss(extracted.css) !== normalizeCss(defaultMarkdownCssText));
+        setCustomCssProgrammatic(extracted.css || defaultMarkdownCssText);
+    });
+
+    resetTextareaView(markdownEditor || markdownInput);
+    resetTextareaView(cssEditor || cssInput);
+    updatePreview();
+    autoSave();
+
+    setMdfprojHandle(fileHandle || null);
+    setMdfprojDisplayNameFromFilename(file.name);
+    setMdfprojModified(false);
+    persistMdfprojAsLastSaved();
+    currentDocBaseName = stripMdfprojExtension(file.name) || currentDocBaseName;
+    showToast('✅ Project imported (.mdfproj)');
+}
 
 // CSS tab persistence:
 // Only persist CSS when the user actually edits the CSS tab.
@@ -300,7 +736,28 @@ function resetTextareaView(textarea) {
 
 function applyPageNumberVisibility() {
     if (!previewContent) return;
-    previewContent.classList.toggle('show-page-numbers', !!(pageNumbers && pageNumbers.checked));
+    const isChecked = !!(pageNumbers && pageNumbers.checked);
+    previewContent.classList.toggle('show-page-numbers', isChecked);
+    
+    // Show/hide starting page and starting number inputs
+    if (startingPageContainer) {
+        startingPageContainer.style.display = isChecked ? 'flex' : 'none';
+    }
+    if (startingNumberContainer) {
+        startingNumberContainer.style.display = isChecked ? 'flex' : 'none';
+    }
+}
+
+function getStartingPage() {
+    if (!startingPage) return 1;
+    const val = parseInt(startingPage.value, 10);
+    return (Number.isFinite(val) && val >= 1) ? val : 1;
+}
+
+function getStartingNumber() {
+    if (!startingNumber) return 1;
+    const val = parseInt(startingNumber.value, 10);
+    return (Number.isFinite(val) && val >= 1) ? val : 1;
 }
 
 // ==================== Editor Context Menu ====================
@@ -1474,23 +1931,44 @@ function _parseRowColumns(rawRowHtml) {
     const inner = src.slice(gtOpen + 1, ltClose);
     const cols = [];
 
+    const readWidthAttr = (openTagText) => {
+        const t = String(openTagText || '');
+        const m = t.match(/\bwidth\s*=\s*("([^"]+)"|'([^']+)'|([^\s>]+))/i);
+        const rawVal = (m && (m[2] || m[3] || m[4])) ? String(m[2] || m[3] || m[4]) : '';
+        return rawVal.trim();
+    };
+
     let i = 0;
     while (i < inner.length) {
         const lt = inner.toLowerCase().indexOf('<col', i);
         if (lt === -1) break;
         const gt = _findTagEnd(inner, lt);
         if (gt === -1) break;
+
+        const openTag = inner.slice(lt, gt + 1);
+        const width = readWidthAttr(openTag);
+
         const endGt = _findMatchingCloseTag(inner, 'col', gt);
         if (endGt === -1) break;
         const ltEnd = inner.toLowerCase().lastIndexOf('</col', endGt);
         if (ltEnd === -1) break;
 
         const colInner = inner.slice(gt + 1, ltEnd);
-        cols.push(colInner);
+        cols.push({ content: colInner, width });
         i = endGt + 1;
     }
 
     return cols;
+}
+
+function normalizeColWidth(value) {
+    const v = String(value || '').trim();
+    if (!v) return '';
+
+    // Allow only safe, common units (avoid arbitrary CSS injection).
+    // Examples: 30%, 240px, 12rem, 1.5em
+    if (/^\d+(?:\.\d+)?(?:%|px|rem|em|vw|vh)$/.test(v)) return v;
+    return '';
 }
 
 const layoutRowMarkedExtension = {
@@ -1525,14 +2003,19 @@ const layoutRowMarkedExtension = {
     },
     renderer(token) {
         const cols = Array.isArray(token.cols) ? token.cols : [];
-        const htmlCols = cols.map((md) => {
+        const htmlCols = cols.map((col) => {
+            const md = (col && typeof col === 'object' && 'content' in col) ? col.content : col;
+            const widthRaw = (col && typeof col === 'object' && 'width' in col) ? col.width : '';
+            const width = normalizeColWidth(widthRaw);
+
             // Parse Markdown inside each column normally (supports fenced code blocks).
             // IMPORTANT: content inside <col> is usually indented in authoring.
             // In Markdown, 4+ leading spaces turns it into an indented code block,
             // which would make HTML like <img ...> render as code. Dedent first.
             const normalized = dedentMarkdownBlock(String(md || ''));
             const inner = marked.parse(normalized);
-            return `<div class="layout-col">${inner}</div>`;
+            const style = width ? ` style="flex: 0 0 ${width}; max-width: ${width};" data-col-width="${width}"` : '';
+            return `<div class="layout-col"${style}>${inner}</div>`;
         }).join('');
         return `<div class="layout-row">${htmlCols}</div>`;
     }
@@ -2121,14 +2604,34 @@ function paginateContent(htmlContent) {
 
     previewContent.innerHTML = '';
     if (pages.length === 0) {
-        previewContent.innerHTML = '<div class="a4-page" data-page="Page 1"></div>';
+        const firstPageIndex = 1;
+        const startPageIndex = getStartingPage();
+        const startNum = getStartingNumber();
+        const shouldShow = firstPageIndex >= startPageIndex;
+        const displayNum = shouldShow ? startNum : '';
+        previewContent.innerHTML = `<div class="a4-page" data-page="${displayNum ? 'Page ' + displayNum : ''}" data-page-visible="${shouldShow}"></div>`;
         return;
     }
 
+    const startPageIndex = getStartingPage();
+    const startNum = getStartingNumber();
+    
     pages.forEach((pageContent, index) => {
         const pageDiv = document.createElement('div');
         pageDiv.className = 'a4-page';
-        pageDiv.setAttribute('data-page', `Page ${index + 1}`);
+        const currentPageIndex = index + 1; // 1-based page index
+        
+        // Only show page numbers starting from startPageIndex
+        if (currentPageIndex >= startPageIndex) {
+            const offset = currentPageIndex - startPageIndex;
+            const pageNum = startNum + offset;
+            pageDiv.setAttribute('data-page', `Page ${pageNum}`);
+            pageDiv.setAttribute('data-page-visible', 'true');
+        } else {
+            pageDiv.setAttribute('data-page', '');
+            pageDiv.setAttribute('data-page-visible', 'false');
+        }
+        
         pageDiv.innerHTML = pageContent;
         previewContent.appendChild(pageDiv);
     });
@@ -2146,6 +2649,9 @@ function updateTOCPageNumbers() {
     const pages = previewContent.querySelectorAll('.a4-page');
     if (pages.length === 0) return;
 
+    const startPageIndex = getStartingPage();
+    const startNum = getStartingNumber();
+
     // For each TOC entry, find which page its target heading is on
     tocEntries.forEach(tocLink => {
         const href = tocLink.getAttribute('href');
@@ -2160,10 +2666,17 @@ function updateTOCPageNumbers() {
 
             if (heading) {
                 // Found the heading on this page
-                const pageNum = pageIndex + 1;
+                const currentPageIndex = pageIndex + 1; // 1-based
                 const pageSpan = tocLink.querySelector('.toc-page');
                 if (pageSpan) {
-                    pageSpan.textContent = pageNum;
+                    // Only show page number if this page has numbering
+                    if (currentPageIndex >= startPageIndex) {
+                        const offset = currentPageIndex - startPageIndex;
+                        const pageNum = startNum + offset;
+                        pageSpan.textContent = pageNum;
+                    } else {
+                        pageSpan.textContent = '-';
+                    }
                 }
                 break;
             }
@@ -2175,6 +2688,34 @@ function showToast(message, duration = 3000) {
     toast.textContent = message;
     toast.classList.add('show');
     setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+async function copyTextToClipboard(text) {
+    const value = String(text ?? '');
+    if (!value) return false;
+
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(value);
+            return true;
+        }
+    } catch { /* ignore */ }
+
+    try {
+        const ta = document.createElement('textarea');
+        ta.value = value;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        ta.style.top = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return !!ok;
+    } catch {
+        return false;
+    }
 }
 
 function showLoading() {
@@ -2373,7 +2914,7 @@ async function downloadPDF() {
         const googleFontsHref = 'https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Barlow:wght@300;400;500;600;700&family=Fira+Code:wght@400;500&display=swap';
         const pageNumberCss = (pageNumbers && pageNumbers.checked) ? `
                     .a4-page { position: relative; }
-                    .a4-page::after {
+                    .a4-page[data-page-visible="true"]::after {
                         content: attr(data-page);
                         position: absolute;
                         bottom: 10mm;
@@ -2584,90 +3125,143 @@ function clearEditor() {
 }
 
 function uploadFile() {
-    fileInput.click();
+    (async () => {
+        if (supportsFileSystemAccessApi()) {
+            try {
+                const [handle] = await window.showOpenFilePicker({
+                    multiple: false,
+                    types: [
+                        {
+                            description: 'MarkDownForge Project',
+                            accept: { 'application/zip': ['.mdfproj'] }
+                        },
+                        {
+                            description: 'Markdown',
+                            accept: { 'text/markdown': ['.md', '.markdown', '.txt'] }
+                        },
+                        {
+                            description: 'ZIP (MD2PDF)',
+                            accept: { 'application/zip': ['.zip'] }
+                        }
+                    ]
+                });
+                const file = await handle.getFile();
+                await handleSelectedFile(file, handle);
+                return;
+            } catch (e) {
+                // User canceled or picker failed; fall back to the hidden input.
+            }
+        }
+        fileInput.click();
+    })();
 }
 
-function handleFileSelect(event) {
-    const file = event.target.files[0];
+async function handleSelectedFile(file, fileHandle) {
     if (!file) return;
+
+    const fileExtension = '.' + String(file.name || '').split('.').pop().toLowerCase();
+    const validTypes = ['.md', '.markdown', '.txt', '.zip', '.mdfproj'];
+
+    if (!validTypes.includes(fileExtension)) {
+        showToast('⚠️ Please upload a Markdown, ZIP, or project (.md, .markdown, .txt, .zip, .mdfproj)');
+        return;
+    }
+
+    // Importing anything other than .mdfproj resets project state.
+    if (fileExtension !== '.mdfproj') {
+        setMdfprojHandle(null);
+        mdfprojDisplayName = '';
+        nonProjectFileLabel = String(file.name || '').trim();
+        setMdfprojModified(false);
+        clearMdfprojPersistedState();
+        updateMdfprojStatusUi();
+    }
 
     currentDocBaseName = guessBaseNameFromFilename(file.name);
 
-    const validTypes = ['.md', '.markdown', '.txt', '.zip'];
-    const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
-
-    if (!validTypes.includes(fileExtension)) {
-        showToast('⚠️ Please upload a Markdown file or ZIP (.md, .markdown, .txt, or .zip)');
+    if (fileExtension === '.mdfproj') {
+        nonProjectFileLabel = '';
+        try {
+            showToast('📦 Importing project...');
+            await importMdfprojFromFile(file, fileHandle);
+        } catch (e) {
+            console.error('.mdfproj import error:', e);
+            showToast('❌ Project import failed');
+        }
         return;
     }
 
     if (fileExtension === '.zip') {
-        (async () => {
-            try {
-                // New document creation: delete the previous workspace.
-                if (currentSessionId) {
-                    try {
-                        await fetch(getApiUrl(`/api/session/${currentSessionId}/delete`), { method: 'POST' });
-                    } catch { /* ignore */ }
-                }
-                showToast('📦 Importing ZIP...');
-                const form = new FormData();
-                form.append('file', file, file.name);
-                const res = await fetch(getApiUrl('/api/import-zip'), { method: 'POST', body: form });
-                if (!res.ok) {
-                    const err = await res.json().catch(() => ({}));
-                    throw new Error(err.detail || 'Import failed');
-                }
-                const json = await res.json();
-                currentSessionId = json.session_id;
-                sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
-                localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
+        try {
+            // New document creation: delete the previous workspace.
+            if (currentSessionId) {
+                try {
+                    await fetch(getApiUrl(`/api/session/${currentSessionId}/delete`), { method: 'POST' });
+                } catch { /* ignore */ }
+            }
 
-                const extracted = extractCustomCssFromMarkdown(json.markdown);
+            showToast('📦 Importing ZIP...');
+            const form = new FormData();
+            form.append('file', file, file.name);
+            const res = await fetch(getApiUrl('/api/import-zip'), { method: 'POST', body: form });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || 'Import failed');
+            }
+            const json = await res.json();
+            currentSessionId = json.session_id;
+            sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
+            localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
+
+            const extracted = extractCustomCssFromMarkdown(json.markdown);
+            runWithoutMdfprojModifiedTracking(() => {
                 setMarkdownValue(extracted.markdown);
                 userEditedCss = !!(extracted.css && normalizeCss(extracted.css) && normalizeCss(extracted.css) !== normalizeCss(defaultMarkdownCssText));
                 setCustomCssProgrammatic(extracted.css || defaultMarkdownCssText);
-                resetTextareaView(markdownEditor || markdownInput);
-                resetTextareaView(cssEditor || cssInput);
-                updatePreview();
-                autoSave();
-                showToast('✅ ZIP imported');
-            } catch (e) {
-                console.error('ZIP import error:', e);
-                showToast('❌ ZIP import failed');
-            } finally {
-                fileInput.value = '';
-            }
-        })();
+            });
+            resetTextareaView(markdownEditor || markdownInput);
+            resetTextareaView(cssEditor || cssInput);
+            updatePreview();
+            autoSave();
+            showToast('✅ ZIP imported');
+        } catch (e) {
+            console.error('ZIP import error:', e);
+            showToast('❌ ZIP import failed');
+        }
         return;
     }
 
     // New document creation (opening a new markdown file): reset server workspace.
-    (async () => {
-        try { await resetSessionWorkspace(); } catch { /* ignore */ }
-    })();
+    try { await resetSessionWorkspace(); } catch { /* ignore */ }
 
-    const reader = new FileReader();
-
-    reader.onload = function (e) {
-        const raw = e.target.result;
+    try {
+        const raw = await file.text();
         const extracted = extractCustomCssFromMarkdown(raw);
-        setMarkdownValue(extracted.markdown);
-        userEditedCss = !!(extracted.css && normalizeCss(extracted.css) && normalizeCss(extracted.css) !== normalizeCss(defaultMarkdownCssText));
-        setCustomCssProgrammatic(extracted.css || defaultMarkdownCssText);
+        runWithoutMdfprojModifiedTracking(() => {
+            setMarkdownValue(extracted.markdown);
+            userEditedCss = !!(extracted.css && normalizeCss(extracted.css) && normalizeCss(extracted.css) !== normalizeCss(defaultMarkdownCssText));
+            setCustomCssProgrammatic(extracted.css || defaultMarkdownCssText);
+        });
         resetTextareaView(markdownEditor || markdownInput);
         resetTextareaView(cssEditor || cssInput);
         updatePreview();
         showToast('✅ File loaded successfully!');
         autoSave();
-    };
-
-    reader.onerror = function () {
+    } catch {
         showToast('❌ Error reading file. Please try again.');
-    };
+    }
+}
 
-    reader.readAsText(file);
-    fileInput.value = '';
+function handleFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    (async () => {
+        try {
+            await handleSelectedFile(file, null);
+        } finally {
+            fileInput.value = '';
+        }
+    })();
 }
 
 // ==================== Image Paste Handling ====================
@@ -2717,6 +3311,7 @@ function bindImagePasteHandler() {
                 insertSnippet(editorTarget, snippet);
                 updatePreview();
                 autoSave();
+                markMdfprojModified();
                 showToast('🖼️ Image pasted');
             } catch (e) {
                 console.error('Paste image error:', e);
@@ -2847,17 +3442,40 @@ function toggleFullscreen() {
 }
 
 function handleKeyboardShortcuts(event) {
-    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
+    const isCmd = !!(event.ctrlKey || event.metaKey);
+    const key = String(event.key || '').toLowerCase();
+
+    // Ctrl/Cmd + Alt + P => Export PDF
+    // (Ctrl/Cmd + Shift + S is commonly reserved by browsers for "Save page as")
+    if (isCmd && event.altKey && !event.shiftKey && key === 'p') {
         event.preventDefault();
         downloadPDF();
+        return;
     }
-    if ((event.ctrlKey || event.metaKey) && event.key === 'k') {
+
+    // Ctrl/Cmd + S => Save project (.mdfproj)
+    if (isCmd && !event.shiftKey && key === 's') {
+        event.preventDefault();
+        (async () => {
+            try {
+                await overwriteMdfproj();
+            } catch (e) {
+                console.error('Project save error:', e);
+                showToast('❌ Could not save project');
+            }
+        })();
+        return;
+    }
+
+    if (isCmd && key === 'k') {
         event.preventDefault();
         clearEditor();
+        return;
     }
-    if ((event.ctrlKey || event.metaKey) && event.key === 'o') {
+    if (isCmd && key === 'o') {
         event.preventDefault();
         uploadFile();
+        return;
     }
 }
 
@@ -2899,12 +3517,24 @@ function autoSave() {
     try {
         localStorage.setItem(STORAGE_KEYS.markdown, getMarkdownValue());
         localStorage.setItem(STORAGE_KEYS.pageNumbers, pageNumbers.checked);
+        if (startingPage) {
+            localStorage.setItem(STORAGE_KEYS.startingPage, startingPage.value);
+        }
+        if (startingNumber) {
+            localStorage.setItem(STORAGE_KEYS.startingNumber, startingNumber.value);
+        }
 
-        // Intentionally do NOT persist CSS tab contents.
-        // Requirement: every page load must reflect markdown-styles.css exactly.
+        // CSS tab persistence:
+        // - For non-project docs: always reflect markdown-styles.css on refresh
+        // - For .mdfproj: persist current CSS so refresh doesn't lose project styling
         if (cssInput) {
             localStorage.removeItem(STORAGE_KEYS.customCss);
             localStorage.removeItem(STORAGE_KEYS.savedDefaultCssHash);
+            if (isMdfprojActive()) {
+                persistMdfprojStateSnapshot();
+            } else {
+                try { localStorage.removeItem(STORAGE_KEYS.mdfprojCss); } catch { /* ignore */ }
+            }
         }
     } catch (error) {
         console.warn('Could not save to localStorage:', error);
@@ -2915,17 +3545,58 @@ function loadFromStorage() {
     try {
         const savedContent = localStorage.getItem(STORAGE_KEYS.markdown);
         const savedPageNumbers = localStorage.getItem(STORAGE_KEYS.pageNumbers);
+        const savedStartingPage = localStorage.getItem(STORAGE_KEYS.startingPage);
+        const savedStartingNumber = localStorage.getItem(STORAGE_KEYS.startingNumber);
         const savedZoom = localStorage.getItem(STORAGE_KEYS.previewZoom);
+
+        const storedProjectName = localStorage.getItem(STORAGE_KEYS.mdfprojDisplayName);
+        const storedProjectCss = localStorage.getItem(STORAGE_KEYS.mdfprojCss);
+        const storedLastSavedHash = localStorage.getItem(STORAGE_KEYS.mdfprojLastSavedHash);
 
         if (savedContent) setMarkdownValue(savedContent);
         if (savedPageNumbers !== null) pageNumbers.checked = savedPageNumbers === 'true';
+        if (savedStartingPage && startingPage) {
+            const num = parseInt(savedStartingPage, 10);
+            if (Number.isFinite(num) && num >= 1) {
+                startingPage.value = num;
+            }
+        }
+        if (savedStartingNumber && startingNumber) {
+            const num = parseInt(savedStartingNumber, 10);
+            if (Number.isFinite(num) && num >= 1) {
+                startingNumber.value = num;
+            }
+        }
 
-        // Always load the current markdown-styles.css content into the CSS tab.
-        // Also clear any previously-saved overrides so disk edits are never masked.
+        // Restore project identity (so refresh doesn't turn a saved project into "Unsaved File").
+        if (storedProjectName && String(storedProjectName).trim()) {
+            mdfprojDisplayName = String(storedProjectName).trim();
+            currentDocBaseName = mdfprojDisplayName || currentDocBaseName;
+        }
+
+        // CSS tab init:
+        // - Project active: restore last CSS (so project styling survives refresh)
+        // - Otherwise: always reflect the current markdown-styles.css from disk
         userEditedCss = false;
         localStorage.removeItem(STORAGE_KEYS.customCss);
         localStorage.removeItem(STORAGE_KEYS.savedDefaultCssHash);
-        setCustomCssProgrammatic(defaultMarkdownCssText);
+        if (mdfprojDisplayName && storedProjectCss !== null) {
+            const cssText = String(storedProjectCss || '');
+            userEditedCss = !!(normalizeCss(cssText) && normalizeCss(cssText) !== normalizeCss(defaultMarkdownCssText));
+            setCustomCssProgrammatic(cssText || defaultMarkdownCssText);
+        } else {
+            setCustomCssProgrammatic(defaultMarkdownCssText);
+        }
+
+        // Restore modified state based on last-saved hash (if we have one).
+        if (mdfprojDisplayName && storedLastSavedHash) {
+            const currentHash = computeMdfprojContentHash();
+            setMdfprojModified(String(currentHash) !== String(storedLastSavedHash));
+        } else if (mdfprojDisplayName) {
+            setMdfprojModified(false);
+        } else {
+            updateMdfprojStatusUi();
+        }
 
         if (savedZoom) {
             const zoomNum = Number(savedZoom);
@@ -2948,6 +3619,7 @@ function loadFromStorage() {
 
 let debounceTimer;
 function handleMarkdownInputChange() {
+    markMdfprojModified();
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
         updatePreview();
@@ -2959,6 +3631,7 @@ function handleCssInputChange() {
     applyCustomCssToPreview();
     if (suppressCssTracking) return;
     userEditedCss = true;
+    markMdfprojModified();
     autoSave();
 }
 
@@ -3073,9 +3746,21 @@ function bindEditorEvents() {
 }
 
 btnDownload.addEventListener('click', downloadPDF);
-if (btnSaveMd) btnSaveMd.addEventListener('click', saveMarkdownFile);
-if (btnSaveMdFs) btnSaveMdFs.addEventListener('click', saveMarkdownFile);
+const handleSaveProjectClick = () => {
+    (async () => {
+        try {
+            await overwriteMdfproj();
+        } catch (e) {
+            console.error('Project save error:', e);
+            showToast('❌ Could not save project');
+        }
+    })();
+};
+
+if (btnSaveMd) btnSaveMd.addEventListener('click', handleSaveProjectClick);
+if (btnSaveMdFs) btnSaveMdFs.addEventListener('click', handleSaveProjectClick);
 if (btnDownloadFs) btnDownloadFs.addEventListener('click', downloadPDF);
+if (btnNewDoc) btnNewDoc.addEventListener('click', () => { createNewDocument(); });
 btnClear.addEventListener('click', clearEditor);
 btnUpload.addEventListener('click', uploadFile);
 btnExamples.addEventListener('click', loadExample);
@@ -3112,8 +3797,32 @@ fileInput.addEventListener('change', handleFileSelect);
 
 pageNumbers.addEventListener('change', () => {
     applyPageNumberVisibility();
+    updatePreview();
     autoSave();
 });
+
+if (startingPage) {
+    startingPage.addEventListener('input', () => {
+        updatePreview();
+        autoSave();
+    });
+}
+
+if (startingNumber) {
+    startingNumber.addEventListener('input', () => {
+        updatePreview();
+        autoSave();
+    });
+}
+
+if (btnCopyFormatting && formattingCodeBlock) {
+    btnCopyFormatting.addEventListener('click', async () => {
+        const codeEl = formattingCodeBlock.querySelector('code');
+        const text = codeEl ? codeEl.textContent : formattingCodeBlock.textContent;
+        const ok = await copyTextToClipboard(text);
+        showToast(ok ? '✅ Formatting code copied' : '⚠️ Could not copy');
+    });
+}
 
 if (cssInput) {
     // Events are bound in bindEditorEvents to support CodeMirror.
@@ -3180,6 +3889,8 @@ function setupHeaderFadeOnScroll() {
 
     setupHeaderFadeOnScroll();
 
+    bindBeforeUnloadPrompt();
+
     // Default zoom only if nothing was restored.
     if (!previewContent.dataset.zoom) {
         setPreviewZoom(1);
@@ -3201,7 +3912,8 @@ setTimeout(() => {
 
 console.log('%c MD2PDF Initialized! ', 'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 8px 16px; border-radius: 4px; font-weight: bold;');
 console.log('Keyboard shortcuts:');
-console.log('  Ctrl/Cmd + S: Download PDF');
+console.log('  Ctrl/Cmd + S: Save project (.mdfproj)');
+console.log('  Ctrl/Cmd + Alt + P: Export PDF');
 console.log('  Ctrl/Cmd + K: Clear editor');
 console.log('  Ctrl/Cmd + O: Upload file');
 console.log('  Ctrl/Cmd + Enter: Insert Page Break');

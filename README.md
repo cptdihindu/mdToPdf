@@ -57,7 +57,8 @@ When you upload that `.md` later, the app extracts the CSS back into the CSS tab
 
 ## Keyboard shortcuts
 
-- **Ctrl/Cmd + S**: Download PDF
+- **Ctrl/Cmd + S**: Save project (.mdfproj)
+- **Ctrl/Cmd + Alt + P**: Export PDF
 - **Ctrl/Cmd + K**: Clear editor
 - **Ctrl/Cmd + O**: Upload file
 - **Ctrl/Cmd + Enter**: Insert page break

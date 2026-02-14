@@ -408,6 +408,19 @@ body {
 .panel-actions {
     display: flex;
     gap: var(--spacing-sm);
+    align-items: center;
+}
+
+.editor-status {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    max-width: 320px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    padding: 0 0.25rem;
+    user-select: none;
 }
 
 .editor-wrapper {
@@ -753,7 +766,7 @@ body {
     display: none;
 }
 
-.show-page-numbers .a4-page::after {
+.show-page-numbers .a4-page[data-page-visible="true"]::after {
     display: block;
 }
 
@@ -852,6 +865,62 @@ body {
 .feature-description {
     color: var(--text-secondary);
     font-size: 0.9375rem;
+}
+
+/* ==================== Formatting Examples Section ==================== */
+.formatting-section {
+    margin-bottom: var(--spacing-2xl);
+}
+
+.formatting-card {
+    padding: var(--spacing-xl);
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    backdrop-filter: blur(10px);
+}
+
+.formatting-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--spacing-md);
+    margin-bottom: var(--spacing-sm);
+}
+
+.formatting-title {
+    font-size: 1.375rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.formatting-lead {
+    color: var(--text-secondary);
+    font-size: 0.9375rem;
+    margin-bottom: var(--spacing-lg);
+}
+
+.formatting-code {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-lg);
+    overflow: auto;
+    max-height: 520px;
+}
+
+.formatting-code code {
+    font-family: var(--font-mono);
+    font-size: 0.875rem;
+    line-height: 1.55;
+    color: var(--text-primary);
+    white-space: pre;
+}
+
+.formatting-note {
+    margin-top: var(--spacing-md);
+    color: var(--text-tertiary);
+    font-size: 0.875rem;
 }
 
 /* ==================== Footer ==================== */

@@ -463,8 +463,34 @@ app.mount("/", StaticFiles(directory=str(BASE_DIR), html=True), name="static")
 
 
 if __name__ == "__main__":
-    # Convenience: python server.py
-    import uvicorn
+    # Check requirements before starting server
+    import sys
+    import importlib
 
+    REQUIRED_MODULES = [
+        "fastapi",
+        "uvicorn",
+        "playwright.async_api",
+        "pydantic",
+        "multipart",  # ✅ correct module name
+        "bs4",
+    ]
+
+    missing = []
+    for mod in REQUIRED_MODULES:
+        try:
+            importlib.import_module(mod)
+        except ImportError:
+            missing.append(mod)
+
+    if missing:
+        print("\nERROR: Missing required packages:")
+        for m in missing:
+            print(f"  - {m}")
+        print("\nPlease install all requirements with:\n  pip install -r requirements.txt\n")
+        sys.exit(1)
+
+    import uvicorn
     port = int(os.environ.get("PORT", "8010"))
     uvicorn.run("server:app", host="127.0.0.1", port=port, reload=False)
+

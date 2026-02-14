@@ -78,6 +78,15 @@
                                 </div>
                             </div>
                             <div class="panel-actions">
+                                <div class="editor-status" id="editor-project-status" aria-live="polite">Unsaved File</div>
+                                <button class="icon-btn" id="btn-new-doc" title="New document" type="button">
+                                    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                                        <path d="M6 2.75H11.25L14.5 6V15.25C14.5 15.8023 14.0523 16.25 13.5 16.25H6C5.44772 16.25 5 15.8023 5 15.25V3.75C5 3.19772 5.44772 2.75 6 2.75Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                                        <path d="M11.25 2.75V6H14.5" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+                                        <path d="M9.75 9.5H6.75" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                                        <path d="M8.25 8V11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                                    </svg>
+                                </button>
                                 <button class="icon-btn" id="btn-editor-zoom-out" title="Zoom out">
                                     <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
                                         <path d="M4 9H14" stroke="currentColor" stroke-width="2"
@@ -104,7 +113,7 @@
                                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
                                     </svg>
                                 </button>
-                                <input type="file" id="file-input" accept=".md,.markdown,.txt,.zip" hidden>
+                                <input type="file" id="file-input" accept=".md,.markdown,.txt,.zip,.mdfproj" hidden>
                             </div>
                         </div>
                         <div class="editor-wrapper">
@@ -189,6 +198,14 @@ Create amazing PDFs from Markdown!
                             <span class="checkbox-custom"></span>
                             <span>Page numbers</span>
                         </label>
+                        <label class="checkbox-label" id="starting-page-container" style="display: none; gap: 8px;">
+                            <span style="color: var(--text-secondary); font-size: 0.9375rem;">Starting page:</span>
+                            <input type="number" id="starting-page" min="1" value="1" style="width: 70px; padding: 6px 10px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary); font-size: 0.9375rem;">
+                        </label>
+                        <label class="checkbox-label" id="starting-number-container" style="display: none; gap: 8px;">
+                            <span style="color: var(--text-secondary); font-size: 0.9375rem;">Starting number:</span>
+                            <input type="number" id="starting-number" min="1" value="1" style="width: 70px; padding: 6px 10px; border: 2px solid var(--border-color); border-radius: 8px; background: var(--bg-primary); color: var(--text-primary); font-size: 0.9375rem;">
+                        </label>
                     </div>
                     <div class="controls-right">
                         <button class="btn-secondary" id="btn-save-md" type="button">Save Document</button>
@@ -225,6 +242,156 @@ Create amazing PDFs from Markdown!
                     <p class="feature-description">Works directly in your browser</p>
                 </div>
             </section>
+
+                        <section class="formatting-section" aria-label="Formatting examples">
+                                <div class="formatting-card">
+                                <div class="formatting-header">
+                                    <h2 class="formatting-title">Formatting examples (copy/paste)</h2>
+                                    <button class="btn-secondary" id="btn-copy-formatting" type="button">Copy</button>
+                                </div>
+                                        <p class="formatting-lead">
+                                                Everything below is displayed as plain code (not rendered). You can copy this into your document
+                                                or paste it to an AI as a template.
+                                        </p>
+
+                                <pre class="formatting-code" id="formatting-code-block"><code># Heading 1 (H1)
+
+            ## Heading 2 (H2)
+
+            ### Heading 3 (H3)
+
+            #### Heading 4 (H4)
+
+            ##### Heading 5 (H5)
+
+            ###### Heading 6 (H6)
+
+            ---
+
+            ## Basic formatting
+- Bullet list item
+- **Bold text**
+- *Italic text*
+- **_Bold + Italic_**
+- Inline code: `const x = 123;`
+- Link: [OpenAI](https://openai.com)
+
+---
+
+## Table of Contents
+
+[TOC]
+
+---
+
+## Quotes
+
+&gt; This is a blockquote.
+&gt;
+&gt; It can span multiple lines.
+
+---
+
+## Code blocks
+
+```js
+function hello(name) {
+    console.log('Hello, ' + name);
+}
+
+hello('World');
+```
+
+```python
+def add(a, b):
+        return a + b
+
+print(add(2, 3))
+```
+
+---
+
+## Tables
+
+| Column | Value |
+|--------|-------|
+| A      | 123   |
+| B      | 456   |
+
+---
+
+## Manual line break (HTML)
+
+First line&lt;br&gt;
+Second line
+
+---
+
+## Page break
+
+&lt;div class="page-break"&gt;&lt;/div&gt;
+
+---
+
+## Right aligned (float)
+
+&lt;span class="float-right"&gt;Right aligned text&lt;/span&gt;
+
+---
+
+## Split line (left + right)
+
+&lt;div class="line-split"&gt;
+    &lt;span&gt;Left text&lt;/span&gt;
+    &lt;span class="right"&gt;Right text&lt;/span&gt;
+&lt;/div&gt;
+
+---
+
+## Layout columns (custom tags)
+
+&lt;row&gt;
+    &lt;col width="30%"&gt;
+    **Left column (30%)**
+
+    - Item 1
+    - Item 2
+    &lt;/col&gt;
+
+    &lt;col width="70%"&gt;
+    **Right column (70%)**
+
+    ```txt
+    This is a code block inside the right column.
+    ```
+    &lt;/col&gt;
+&lt;/row&gt;
+
+---
+
+## Nested rows/columns example
+
+&lt;row&gt;
+    &lt;col width="50%"&gt;
+    **Column A**
+    &lt;row&gt;
+        &lt;col width="50%"&gt;A1&lt;/col&gt;
+        &lt;col width="50%"&gt;A2&lt;/col&gt;
+    &lt;/row&gt;
+    &lt;/col&gt;
+
+    &lt;col width="50%"&gt;
+    **Column B**
+    &lt;/col&gt;
+&lt;/row&gt;
+</code></pre>
+
+                                        <p class="formatting-note">
+                                                Notes: Page numbering is configured using the “Page numbers / Starting page / Starting number”
+                                                controls above the preview.
+                                        </p>
+                                </div>
+                        </section>
         </div>
     </main>
 
@@ -248,6 +415,7 @@ Create amazing PDFs from Markdown!
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/marked@11.1.1/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
