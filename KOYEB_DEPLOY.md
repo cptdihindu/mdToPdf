@@ -8,10 +8,7 @@
 
 ### 2. Deployment Configuration
 
-**Build Command:**
-```bash
-python -m playwright install --with-deps chromium
-```
+**Build Command:** Leave empty (browsers install automatically on startup)
 
 **Run Command:**
 ```bash
@@ -22,14 +19,12 @@ uvicorn main:app --host 0.0.0.0 --port $PORT
 
 **Environment Variables:**
 - `PORT`: Auto-provided by Koyeb (usually 8000)
-- `HOST`: Set to `0.0.0.0` (already default in code)
+- Optional: `PLAYWRIGHT_BROWSERS_PATH=0` (uses default browser location)
 
 ### 3. Important Notes
 
 #### Playwright Installation
-The app requires Playwright with Chromium browser for PDF generation. The build command above installs:
-- `playwright install chromium` - Downloads Chromium binary
-- `--with-deps` - Installs system dependencies (required on Linux)
+Playwright browsers are now **auto-installed on startup**. The server checks for Chromium at launch and installs it if missing. First startup may take 1-2 minutes while browsers download.
 
 #### Memory Requirements
 Playwright/Chromium needs at least 512MB RAM. If you see crashes:
@@ -46,12 +41,12 @@ Playwright/Chromium needs at least 512MB RAM. If you see crashes:
 **Option A: Via Koyeb Web UI**
 1. Go to Koyeb Dashboard → Create Service
 2. Connect your Git repository
-3. Set **Build Command**: `python -m playwright install --with-deps chromium`
+3. **Leave Build Command empty** (or use the full path above)
 4. Set **Run Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 5. Set **Port**: `8000`
-6. Deploy!
-
-**Option B: Via Command Line**
+4. Set **Run Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+5. Set **Port**: `8000`
+6*Option B: Via Command Line**
 ```bash
 # If you have Koyeb CLI installed
 koyeb service create mdtopdf \
@@ -62,8 +57,7 @@ koyeb service create mdtopdf \
   --run-command "uvicorn main:app --host 0.0.0.0 --port \$PORT" \
   --instance-type small
 ```
-
-### 5. Verify Deployment
+5. Verify Deployment
 
 After deployment:
 1. Open the Koyeb-provided URL (e.g., `https://your-app.koyeb.app`)
@@ -81,9 +75,9 @@ After deployment:
 - Note: Koyeb's buildpack installs requirements.txt automatically, the build command only needs to install browsers
 
 **Out of Memory / Crashes:**
-- Upgrade instance type (Chromium is memory-intensive)
-- Check Koyeb logs for memory-related errors
-
+- Browsers now auto-install on startup (check logs for "Checking Playwright browser installation...")
+- If installation fails, check container logs for errors
+- May need 512MB+ RAM for browser installation
 **Static files not loading:**
 - Ensure `index.html`, `script.js`, `styles.css`, etc. are in the repository
 - Check that FastAPI static file mounting is working (it's configured in `server.py`)
