@@ -3,50 +3,50 @@
 ## Quick Deploy to Koyeb
 
 ### 1. Prerequisites
-- Koyeb account (free tier works)
+- Koyeb account (free tier works with 512MB+ instance)
 - This repository pushed to GitHub/GitLab
 
-### 2. Deployment Configuration
+### 2. Deployment Method: Docker
 
-**Build Command:** Leave empty (browsers install automatically on startup)
+**Why Docker?** Playwright requires system dependencies (fonts, libraries) that need root access to install. Using a Dockerfile pre-installs everything correctly during build.
 
-**Run Command:**
-```bash
-uvicorn main:app --host 0.0.0.0 --port $PORT
-```
+### 3. Deployment Configuration
 
-**Port:** `8000` (Koyeb default)
+**Deployment Type:** Docker
+
+**Dockerfile Path:** `./Dockerfile` (auto-detected)
+
+**Port:** `8000`
 
 **Environment Variables:**
-- `PORT`: Auto-provided by Koyeb (usually 8000)
+- `PORT`: Auto-provided by Koyeb (server uses this)
 - Optional: `PLAYWRIGHT_BROWSERS_PATH=0` (uses default browser location)
 
-### 3. Important Notes
-
-#### Playwright Installation
-Playwright browsers are now **auto-installed on startup**. The server checks for Chromium at launch and installs it if missing. First startup may take 1-2 minutes while browsers download.
+### 4. Important Notes
 
 #### Memory Requirements
-Playwright/Chromium needs at least 512MB RAM. If you see crashes:
-- Upgrade to a larger Koyeb instance
-- Or reduce concurrent PDF generations
+Playwright/Chromium needs at least **512MB RAM**. Free tier should work, but if you see crashes, upgrade instance size.
 
 #### File Storage
 - Session data is stored in `/tmp/mdpdf/` by default
 - Koyeb containers are ephemeral - uploaded images/sessions are lost on restart
-- For persistent storage, you'd need to integrate cloud storage (S3, etc.)
+- For persistent storage, integrate cloud storage (S3, etc.)
 
-### 4. Deployment Steps
+#### Build Time
+First build takes 3-5 minutes (installing Playwright + system deps). Subsequent builds are faster with Docker layer caching.
+
+### 5. Deployment Steps
 
 **Option A: Via Koyeb Web UI**
 1. Go to Koyeb Dashboard → Create Service
 2. Connect your Git repository
-3. **Leave Build Command empty** (or use the full path above)
-4. Set **Run Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+3. Select **Docker** as builder
+4. Koyeb auto-detects `Dockerfile`
 5. Set **Port**: `8000`
-4. Set **Run Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
-5. Set **Port**: `8000`
-6*Option B: Via Command Line**
+6. Choose instance size: **Small** or larger (needs 512MB+ RAM)
+7. Click Deploy
+
+**Option B: Via Koyeb CLI**
 ```bash
 # If you have Koyeb CLI installed
 koyeb service create mdtopdf \
@@ -55,88 +55,95 @@ koyeb service create mdtopdf \
   --ports 8000:http \
   --build-command "python -m playwright install --with-deps chromium" \
   --run-command "uvicorn main:app --host 0.0.0.0 --port \$PORT" \
+```bash
+# Install Koyeb CLI first: npm install -g @koyeb/cli
+# Login: koyeb login
+
+koyeb service create mdtopdf \
+  --git github.com/yourusername/MdToPdf \
+  --git-branch main \
+  --docker \
+  --ports 8000:http \
   --instance-type small
 ```
-5. Verify Deployment
+
+### 6. Verify Deployment
 
 After deployment:
 1. Open the Koyeb-provided URL (e.g., `https://your-app.koyeb.app`)
 2. Test the converter with some Markdown
 3. Try generating a PDF to verify Playwright is working
+4. Check logs for: "✓ Server starting (Playwright browsers should be pre-installed)"
 
-### 6. Troubleshooting
+### 7. Troubleshooting
 
-**"Could not import module 'main'" Error:**
-- Fixed! `main.py` now exists in the root directory
+**Build Fails:**
+- Check Koyeb is using Docker builder (not buildpack)
+- Ensure `Dockerfile` exists in repository root
+- Build logs should show "Installing Playwright browsers..."
 
-**Playwright/Chromium not found:**
-- Ensure build command is: `python -m playwright install --with-deps chromium`
-- Check build logs for installation errors
-- Note: Koyeb's buildpack installs requirements.txt automatically, the build command only needs to install browsers
+**"Playwright browser not found" at runtime:**
+- Verify Docker build completed successfully
+- Check that `playwright install chromium` ran in Dockerfile
+- Rebuild service from scratch if caching issues
 
 **Out of Memory / Crashes:**
-- Browsers now auto-install on startup (check logs for "Checking Playwright browser installation...")
-- If installation fails, check container logs for errors
-- May need 512MB+ RAM for browser installation
+- Chromium needs 512MB+ RAM
+- Upgrade to larger instance (Small tier or higher)
+- Free tier may struggle with concurrent PDF generation
+
+**Health Checks Failing:**
+- Ensure port 8000 is exposed in Dockerfile
+- Server binds to `0.0.0.0` not `127.0.0.1` (already configured)
+- Check that FastAPI app starts successfully in logs
+
 **Static files not loading:**
 - Ensure `index.html`, `script.js`, `styles.css`, etc. are in the repository
 - Check that FastAPI static file mounting is working (it's configured in `server.py`)
+- Verify all files are copied in Dockerfile (`COPY . .`)
 
-### 7. Alternative: Docker Deployment
+### 8. Local Docker Testing
 
-If standard Koyeb deployment has issues, consider Docker:
-
-Create `Dockerfile`:
-```dockerfile
-FROM python:3.11-slim
-
-# Install system dependencies for Playwright
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-RUN playwright install --with-deps chromium
-
-COPY . .
-
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-Then deploy the Docker image to Koyeb.
-
-### 8. Cost Optimization
+Test the Docker build locally before deploying:
 
 **Free Tier Tips:**
-- Koyeb free tier: 512MB RAM, 2 vCPU
-- Should work for light usage
-- PDF generation is memory-intensive - consider upgrading for production
+- Koyeb free tier: 512MB RAM, should work for light usage
+- Docker build is free (charges only for runtime)
+- PDF generation is memory-intensive - upgrade for heavy production use
 
 **Reduce Cold Starts:**
-- Keep the service "always on" (may require paid tier)
-- Or implement health-check endpoint warmup
+- Docker-based deployment has faster cold starts (browsers pre-installed)
+- Keep instance type small unless hitting memory limits
 
 ---
 
-## Local Testing (Production Mode)
+### 8. Local Docker Testing
 
-Test the same configuration locally:
+Test the Docker build locally before deploying:
+
+```bash
+# Build the image
+docker build -t mdtopdf .
+
+# Run locally
+docker run -p 8000:8000 mdtopdf
+```
+
+Visit `http://localhost:8000` to test.
+
+---
+
+## Local Testing (Non-Docker)
+
+For local development without Docker:
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
-playwright install --with-deps chromium
+playwright install chromium
 
-# Run with environment variable
-PORT=8000 HOST=0.0.0.0 python server.py
-
-# Or use uvicorn directly (same as Koyeb)
-uvicorn main:app --host 0.0.0.0 --port 8000
+# Run server
+python server.py
 ```
 
 Visit `http://localhost:8000`

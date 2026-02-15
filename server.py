@@ -77,24 +77,9 @@ async def _cleanup_worker() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Install Playwright browsers if needed (for cloud deployments)
-    try:
-        import subprocess
-        import sys
-        print("Checking Playwright browser installation...")
-        result = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        if result.returncode == 0:
-            print("Playwright browsers ready.")
-        else:
-            print(f"Playwright install warning: {result.stderr}")
-    except Exception as e:
-        print(f"Could not auto-install Playwright browsers: {e}")
-        print("PDF generation may fail. Run: playwright install --with-deps chromium")
+    # Skip auto-install in Docker/containers (browsers should be pre-installed)
+    # For local development, run: playwright install chromium
+    print("✓ Server starting (Playwright browsers should be pre-installed)")
     
     # Run a cleanup pass at startup, then start the periodic cleanup task.
     try:
