@@ -103,10 +103,12 @@ function makeFreshDocumentBaseName(prefix = 'document') {
     return `${prefix}-${y}${m}${day}-${hh}${mm}${ss}`;
 }
 
-async function createNewDocument() {
+async function createNewDocument(options = {}) {
+    const silent = !!options.silent;
+    const skipPrompt = !!options.skipPrompt;
     // In-app new document flow.
     // If there are unsaved changes, prompt the user to save (OK) or discard (Cancel).
-    if (shouldWarnBeforeClosingTab()) {
+    if (!skipPrompt && shouldWarnBeforeClosingTab()) {
         const saveFirst = confirm('You have unsaved changes. Save before creating a new document?');
         if (saveFirst) {
             try {
@@ -146,7 +148,9 @@ async function createNewDocument() {
     resetTextareaView(cssEditor || cssInput);
     updatePreview();
     autoSave();
-    showToast('📄 New document');
+    if (!silent) {
+        showToast('📄 New document');
+    }
 }
 
 function persistMdfprojAsLastSaved() {
@@ -514,9 +518,6 @@ function hashText(text) {
 // Markdown stores images as relative paths (images/<name>), but preview/PDF need
 // absolute URLs to fetch from the server securely.
 const SESSION_STORAGE_KEY = 'md2pdf_session_id';
-// Persist the most recent session so images continue to resolve after a tab is closed.
-// (sessionStorage is per-tab; localStorage survives tab close.)
-const SESSION_PERSIST_KEY = 'md2pdf_persist_session_id';
 let currentSessionId = null;
 
 function bestEffortDeleteSession(sessionId) {
@@ -569,9 +570,11 @@ function getApiUrl(path) {
 async function ensureSession() {
     const candidates = [];
     const fromSession = sessionStorage.getItem(SESSION_STORAGE_KEY);
-    const fromPersist = localStorage.getItem(SESSION_PERSIST_KEY);
     if (fromSession) candidates.push(fromSession);
-    if (fromPersist && fromPersist !== fromSession) candidates.push(fromPersist);
+
+    // Always treat a new tab/window as a new document session.
+    // If older builds persisted a session id in localStorage, clear it best-effort.
+    try { localStorage.removeItem('md2pdf_persist_session_id'); } catch { /* ignore */ }
 
     for (const existing of candidates) {
         try {
@@ -579,7 +582,6 @@ async function ensureSession() {
             if (res.ok) {
                 currentSessionId = existing;
                 sessionStorage.setItem(SESSION_STORAGE_KEY, existing);
-                localStorage.setItem(SESSION_PERSIST_KEY, existing);
                 bestEffortPruneOtherSessions(existing);
                 return existing;
             }
@@ -595,7 +597,6 @@ async function ensureSession() {
     const json = await res.json();
     currentSessionId = json.session_id;
     sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
-    localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
     bestEffortPruneOtherSessions(currentSessionId);
     return currentSessionId;
 }
@@ -609,7 +610,6 @@ async function resetSessionWorkspace() {
         const json = await res.json();
         currentSessionId = json.session_id;
         sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
-        localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
         return currentSessionId;
     } catch {
         // Fall back to a new session.
@@ -878,10 +878,51 @@ function applyHeadingToSelection(editorTarget, level) {
             .join('\n');
     };
 
+    const applyToCurrentLine = () => {
+        if (isCodeMirrorInstance(editorTarget)) {
+            const doc = editorTarget.getDoc();
+            const cur = doc.getCursor();
+            const lineText = doc.getLine(cur.line) || '';
+            const already = lineText.startsWith(prefix);
+            const nextLine = already
+                ? (lineText.startsWith(prefix) ? lineText.slice(prefix.length) : lineText)
+                : (prefix + lineText.replace(/^\s{0,3}#{1,6}\s+/, ''));
+            doc.replaceRange(nextLine, { line: cur.line, ch: 0 }, { line: cur.line, ch: lineText.length }, 'insert');
+            // Keep cursor roughly in place, but after prefix if we just added it.
+            const nextCh = already ? Math.max(0, cur.ch - prefix.length) : (cur.ch + prefix.length);
+            doc.setCursor({ line: cur.line, ch: Math.min(nextLine.length, Math.max(0, nextCh)) });
+            editorTarget.focus();
+            return;
+        }
+
+        const value = String(editorTarget.value || '');
+        const cur = Number(editorTarget.selectionStart) || 0;
+        const lineStart = value.lastIndexOf('\n', cur - 1) + 1;
+        const lineEndIdx = value.indexOf('\n', cur);
+        const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
+        const lineText = value.slice(lineStart, lineEnd);
+        const already = lineText.startsWith(prefix);
+        const nextLine = already
+            ? (lineText.startsWith(prefix) ? lineText.slice(prefix.length) : lineText)
+            : (prefix + lineText.replace(/^\s{0,3}#{1,6}\s+/, ''));
+        const nextValue = value.slice(0, lineStart) + nextLine + value.slice(lineEnd);
+        editorTarget.value = nextValue;
+        const nextCh = already ? Math.max(0, (cur - lineStart) - prefix.length) : ((cur - lineStart) + prefix.length);
+        const nextAbs = lineStart + Math.min(nextLine.length, Math.max(0, nextCh));
+        try {
+            editorTarget.selectionStart = nextAbs;
+            editorTarget.selectionEnd = nextAbs;
+        } catch { /* ignore */ }
+        editorTarget.focus();
+    };
+
     if (isCodeMirrorInstance(editorTarget)) {
         const doc = editorTarget.getDoc();
         const selected = doc.getSelection();
-        if (!selected) return;
+        if (!selected) {
+            applyToCurrentLine();
+            return;
+        }
         doc.replaceSelection(rewriteLines(selected));
         editorTarget.focus();
         return;
@@ -891,7 +932,10 @@ function applyHeadingToSelection(editorTarget, level) {
     const end = editorTarget.selectionEnd;
     const value = editorTarget.value || '';
     const selected = value.substring(start, end);
-    if (!selected) return;
+    if (!selected) {
+        applyToCurrentLine();
+        return;
+    }
     const replacement = rewriteLines(selected);
     if (!document.execCommand('insertText', false, replacement)) {
         editorTarget.value = value.substring(0, start) + replacement + value.substring(end);
@@ -921,10 +965,45 @@ function toggleLinePrefixOnSelection(editorTarget, prefix) {
             .join('\n');
     };
 
+    const toggleCurrentLine = () => {
+        if (isCodeMirrorInstance(editorTarget)) {
+            const doc = editorTarget.getDoc();
+            const cur = doc.getCursor();
+            const lineText = doc.getLine(cur.line) || '';
+            const already = lineText.startsWith(p);
+            const nextLine = already ? lineText.slice(p.length) : (p + lineText);
+            doc.replaceRange(nextLine, { line: cur.line, ch: 0 }, { line: cur.line, ch: lineText.length }, 'insert');
+            const nextCh = already ? Math.max(0, cur.ch - p.length) : (cur.ch + p.length);
+            doc.setCursor({ line: cur.line, ch: Math.min(nextLine.length, Math.max(0, nextCh)) });
+            editorTarget.focus();
+            return;
+        }
+
+        const value = String(editorTarget.value || '');
+        const cur = Number(editorTarget.selectionStart) || 0;
+        const lineStart = value.lastIndexOf('\n', cur - 1) + 1;
+        const lineEndIdx = value.indexOf('\n', cur);
+        const lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
+        const lineText = value.slice(lineStart, lineEnd);
+        const already = lineText.startsWith(p);
+        const nextLine = already ? lineText.slice(p.length) : (p + lineText);
+        editorTarget.value = value.slice(0, lineStart) + nextLine + value.slice(lineEnd);
+        const nextCh = already ? Math.max(0, (cur - lineStart) - p.length) : ((cur - lineStart) + p.length);
+        const nextAbs = lineStart + Math.min(nextLine.length, Math.max(0, nextCh));
+        try {
+            editorTarget.selectionStart = nextAbs;
+            editorTarget.selectionEnd = nextAbs;
+        } catch { /* ignore */ }
+        editorTarget.focus();
+    };
+
     if (isCodeMirrorInstance(editorTarget)) {
         const doc = editorTarget.getDoc();
         const selected = doc.getSelection();
-        if (!selected) return;
+        if (!selected) {
+            toggleCurrentLine();
+            return;
+        }
         doc.replaceSelection(rewriteLines(selected));
         editorTarget.focus();
         return;
@@ -934,7 +1013,10 @@ function toggleLinePrefixOnSelection(editorTarget, prefix) {
     const end = editorTarget.selectionEnd;
     const value = editorTarget.value || '';
     const selected = value.substring(start, end);
-    if (!selected) return;
+    if (!selected) {
+        toggleCurrentLine();
+        return;
+    }
     const replacement = rewriteLines(selected);
     if (!document.execCommand('insertText', false, replacement)) {
         editorTarget.value = value.substring(0, start) + replacement + value.substring(end);
@@ -949,8 +1031,20 @@ function wrapSelectionAsLink(editorTarget) {
     if (isCodeMirrorInstance(editorTarget)) {
         const doc = editorTarget.getDoc();
         const selected = doc.getSelection();
-        if (!selected) return;
-        doc.replaceSelection(wrap(selected));
+        const cursorFrom = doc.getCursor('from');
+        const cursorTo = doc.getCursor('to');
+        const replacement = wrap(selected);
+        doc.replaceRange(replacement, cursorFrom, cursorTo, 'insert');
+
+        // Select the link text so the user can type immediately.
+        const linkText = selected || 'text';
+        if (!String(linkText).includes('\n')) {
+            const textStartCh = cursorFrom.ch + 1;
+            const textEndCh = textStartCh + linkText.length;
+            doc.setSelection({ line: cursorFrom.line, ch: textStartCh }, { line: cursorFrom.line, ch: textEndCh });
+        } else {
+            doc.setCursor({ line: cursorFrom.line, ch: cursorFrom.ch + replacement.length });
+        }
         editorTarget.focus();
         return;
     }
@@ -959,14 +1053,14 @@ function wrapSelectionAsLink(editorTarget) {
     const end = editorTarget.selectionEnd;
     const value = editorTarget.value || '';
     const selected = value.substring(start, end);
-    if (!selected) return;
     const replacement = wrap(selected);
     if (!document.execCommand('insertText', false, replacement)) {
         editorTarget.value = value.substring(0, start) + replacement + value.substring(end);
     }
     // Keep just the link text selected.
+    const linkText = selected || 'text';
     editorTarget.selectionStart = start + 1;
-    editorTarget.selectionEnd = start + 1 + selected.length;
+    editorTarget.selectionEnd = start + 1 + linkText.length;
 }
 
 function getLineIndentationFromValue(value, cursorIndex) {
@@ -1163,7 +1257,6 @@ function clampMenuPosition(x, y, menuEl) {
 
 function showEditorContextMenuAt(x, y, editorTarget) {
     if (!editorContextMenu) return;
-    const hasSelection = editorHasSelection(editorTarget);
 
     if (contextMenuHideTimer) {
         clearTimeout(contextMenuHideTimer);
@@ -1397,29 +1490,23 @@ function showEditorContextMenuAt(x, y, editorTarget) {
             run: (t) => wrapSelectionAsLink(t)
         },
         {
-            label: 'Heading 1',
-            shortcut: '#',
-            run: (t) => applyHeadingToSelection(t, 1)
-        },
-        {
-            label: 'Heading 2',
-            shortcut: '##',
-            run: (t) => applyHeadingToSelection(t, 2)
-        },
-        {
-            label: 'Heading 3',
-            shortcut: '###',
-            run: (t) => applyHeadingToSelection(t, 3)
-        },
-        {
-            label: 'Heading 4',
-            shortcut: '####',
-            run: (t) => applyHeadingToSelection(t, 4)
+            label: 'Heading',
+            submenu: [
+                { label: 'Heading 1', shortcut: '#', run: (t) => applyHeadingToSelection(t, 1) },
+                { label: 'Heading 2', shortcut: '##', run: (t) => applyHeadingToSelection(t, 2) },
+                { label: 'Heading 3', shortcut: '###', run: (t) => applyHeadingToSelection(t, 3) },
+                { label: 'Heading 4', shortcut: '####', run: (t) => applyHeadingToSelection(t, 4) }
+            ]
         },
         {
             label: 'Quote',
             shortcut: '> ',
             run: (t) => toggleLinePrefixOnSelection(t, '> ')
+        },
+        {
+            label: 'Literature Quote',
+            shortcut: '<quotation>',
+            run: (t) => insertLiteratureQuote(t)
         },
         {
             label: 'Bullet list',
@@ -1438,22 +1525,16 @@ function showEditorContextMenuAt(x, y, editorTarget) {
         }
     );
 
-    // TOC only when no text is selected
-    if (!hasSelection) {
-        actions.push({ separator: true });
-        actions.push(
-            {
-                label: 'Table of Contents',
-                shortcut: '[TOC]',
-                run: (t) => insertTableOfContents(t)
-            }
-        );
-    }
-
     actions.push({ separator: true });
     actions.push({
         label: 'Insert',
         submenu: [
+            {
+                label: 'Table of Contents',
+                shortcut: '[TOC]',
+                run: (t) => insertTableOfContents(t)
+            },
+            { separator: true },
             {
                 label: 'Layout Row',
                 submenu: [
@@ -1675,6 +1756,48 @@ function insertTableOfContents(editorTarget) {
     updatePreview();
     autoSave();
     showToast('📑 Table of Contents marker inserted');
+}
+
+function insertLiteratureQuote(editorTarget) {
+    const readSelectedText = () => {
+        if (!editorTarget) return '';
+
+        if (isCodeMirrorInstance(editorTarget)) {
+            try {
+                return String(editorTarget.getDoc().getSelection() || '');
+            } catch {
+                return '';
+            }
+        }
+
+        try {
+            const start = Number(editorTarget.selectionStart) || 0;
+            const end = Number(editorTarget.selectionEnd) || 0;
+            const value = String(editorTarget.value || '');
+            return end > start ? value.substring(start, end) : '';
+        } catch {
+            return '';
+        }
+    };
+
+    const selected = readSelectedText();
+    const quoteText = selected
+        ? String(selected).replace(/\s+/g, ' ').trim()
+        : 'Quotation text goes here.';
+
+    const lines = [
+        '',
+        '<quotation>',
+        `    <text>${quoteText}</text>`,
+        '    <author>Author / Source</author>',
+        '</quotation>',
+        ''
+    ];
+
+    const snippet = lines.join('\n');
+    const cursorLineOffset = 3;
+    const cursorCh = '    <author>'.length;
+    insertSnippetIntoEditor(editorTarget, snippet, cursorLineOffset, cursorCh);
 }
 
 
@@ -2906,6 +3029,21 @@ function applySavedEditorZoom() {
     setEditorZoom(nextSize);
 }
 
+function applySavedPreviewZoom() {
+    // Preview zoom should persist across refresh even though we intentionally
+    // start each load with a fresh (unsaved) document.
+    try {
+        const stored = localStorage.getItem(STORAGE_KEYS.previewZoom);
+        const zoomNum = stored ? Number(stored) : NaN;
+        if (Number.isFinite(zoomNum) && zoomNum > 0) {
+            setPreviewZoom(zoomNum);
+            return;
+        }
+    } catch { /* ignore */ }
+    // Default.
+    setPreviewZoom(1);
+}
+
 function applySavedEditorSplit() {
     if (!editorContainer) return;
     const stored = localStorage.getItem(STORAGE_KEYS.editorSplit);
@@ -3285,7 +3423,6 @@ async function handleSelectedFile(file, fileHandle) {
             const json = await res.json();
             currentSessionId = json.session_id;
             sessionStorage.setItem(SESSION_STORAGE_KEY, currentSessionId);
-            localStorage.setItem(SESSION_PERSIST_KEY, currentSessionId);
 
             const extracted = extractCustomCssFromMarkdown(json.markdown);
             runWithoutMdfprojModifiedTracking(() => {
@@ -3961,22 +4098,21 @@ function setupHeaderFadeOnScroll() {
     try {
         await ensureSession();
     } catch { /* ignore: app still works without server */ }
-    loadFromStorage();
-    updatePreview();
+
+    // Always start with a fresh, unsaved document on every page load.
+    // Refresh/tab close will not restore prior content.
+    await createNewDocument({ silent: true, skipPrompt: true });
+
     bindEditorEvents();
     bindImagePasteHandler();
     applySavedEditorZoom();
+    applySavedPreviewZoom();
     applySavedEditorSplit();
     setupEditorResize();
 
     setupHeaderFadeOnScroll();
 
     bindBeforeUnloadPrompt();
-
-    // Default zoom only if nothing was restored.
-    if (!previewContent.dataset.zoom) {
-        setPreviewZoom(1);
-    }
 
     // Default to Markdown tab.
     setEditorTab('markdown', false);
