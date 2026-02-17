@@ -72,7 +72,11 @@ async def _cleanup_worker() -> None:
             cleanup_expired_sessions()
         except Exception:
             pass
-        await asyncio.sleep(max(30, CLEANUP_INTERVAL_SECONDS))
+        try:
+            await asyncio.sleep(max(30, CLEANUP_INTERVAL_SECONDS))
+        except asyncio.CancelledError:
+            # Gracefully exit when task is cancelled during shutdown
+            break
 
 
 @asynccontextmanager
@@ -99,6 +103,9 @@ async def lifespan(app: FastAPI):
         task.cancel()
         try:
             await task
+        except asyncio.CancelledError:
+            # Expected during shutdown
+            pass
         except Exception:
             pass
 
