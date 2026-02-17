@@ -56,7 +56,7 @@ Examples:
 /* ==================== Headings ==================== */
 
 h1 {
-    font-size: 1.5em;
+    font-size: 1.3em;
     color: #2c3e50;
     border-bottom: 2px solid #eee;
     padding-bottom: 0.5rem;
@@ -69,7 +69,7 @@ h1 {
 }
 
 h2 {
-    font-size: 1.4em;
+    font-size: 1.3em;
     color: #34495e;
     margin: 1.5rem 0 0.75rem 0;
     page-break-after: avoid;
@@ -79,14 +79,13 @@ h2 {
 }
 
 h3 {
-    font-size: 1.3em;
+    font-size: 1.2em;
     color: #455a64;
     margin: 1.25rem 0 0.5rem 0;
     page-break-after: avoid;
     break-after: avoid-page;
     page-break-inside: avoid;
     break-inside: avoid;
-    padding-left: 20px;
 }
 
 h4 {
@@ -171,7 +170,6 @@ pre {
     margin: 0.5em 0;
     padding: 1em;
     overflow: auto;
-    font-size: 14px;
 }
 
 code {
@@ -196,9 +194,7 @@ img {
     display: block;
     max-width: 100%;
     margin: 20px auto;
-    border-radius: 7px; /* Adjust the value for more or less rounding */
 }
-
 
 
 /* ==================== Blockquotes ==================== */
@@ -426,4 +422,4 @@ quotation author::before {
     content: '— ';
     color: #444;
     font-weight: 600;
-}   
+}
