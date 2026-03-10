@@ -427,3 +427,29 @@ quotation author::before {
     color: #444;
     font-weight: 600;
 }   
+
+/* ==================== Math / KaTeX ==================== */
+
+/* Display (block) math — centered, with breathing room */
+.math-block {
+    display: block;
+    overflow-x: auto;
+    text-align: center;
+    margin: 1.2em 0;
+    padding: 0.5em 0;
+}
+
+/* Remove KaTeX's own top/bottom margin so .math-block controls spacing */
+.math-block .katex-display {
+    margin: 0;
+}
+
+/* Inline math — stays in text flow */
+.math-inline {
+    display: inline;
+}
+
+/* Match surrounding body font size for inline math */
+.math-inline .katex {
+    font-size: 1em;
+}

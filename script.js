@@ -204,6 +204,27 @@ function setMdfprojModified(isModified) {
 function markMdfprojModified() {
     if (suppressMdfprojModifiedTracking) return;
     if (mdfprojIsBusy) return;
+
+    // Smart check: compare current content hash with last saved hash
+    // If they match, don't mark as modified (handles undo back to saved state)
+    try {
+        const savedHash = localStorage.getItem(STORAGE_KEYS.mdfprojLastSavedHash);
+        if (savedHash) {
+            const currentHash = computeMdfprojContentHash();
+            const isActuallyModified = currentHash !== savedHash;
+
+            if (mdfprojIsModified !== isActuallyModified) {
+                mdfprojIsModified = isActuallyModified;
+                updateMdfprojStatusUi();
+            }
+            return;
+        }
+    } catch (e) {
+        // Fallback to simple marking if hash check fails
+        console.warn('Hash check failed:', e);
+    }
+
+    // Fallback: mark as modified (for new unsaved files)
     if (!mdfprojIsModified) {
         mdfprojIsModified = true;
         updateMdfprojStatusUi();
@@ -333,7 +354,12 @@ async function buildMdfprojZipBlob() {
         title,
         lastSaved: new Date().toISOString(),
         version: '1.0',
-        author: 'MarkDownForge User'
+        author: 'MarkDownForge User',
+        pageNumbers: {
+            enabled: pageNumbers ? pageNumbers.checked : false,
+            startingPage: startingPage ? parseInt(startingPage.value, 10) : 1,
+            startingNumber: startingNumber ? parseInt(startingNumber.value, 10) : 1
+        }
     };
     zip.file('meta.json', JSON.stringify(meta, null, 2));
 
@@ -432,6 +458,18 @@ async function importMdfprojFromFile(file, fileHandle) {
     const markdownWithCss = await docFile.async('string');
     const extracted = extractCustomCssFromMarkdown(markdownWithCss);
 
+    // Read metadata if available
+    let projectMeta = null;
+    const metaFile = zip.file('meta.json');
+    if (metaFile) {
+        try {
+            const metaJson = await metaFile.async('string');
+            projectMeta = JSON.parse(metaJson);
+        } catch (e) {
+            console.warn('Could not parse meta.json:', e);
+        }
+    }
+
     // Reset server workspace so imported images don't collide with previous sessions.
     await resetSessionWorkspace();
 
@@ -470,6 +508,22 @@ async function importMdfprojFromFile(file, fileHandle) {
 
     resetTextareaView(markdownEditor || markdownInput);
     resetTextareaView(cssEditor || cssInput);
+
+    // Restore page number settings from metadata
+    if (projectMeta && projectMeta.pageNumbers) {
+        if (pageNumbers) {
+            pageNumbers.checked = projectMeta.pageNumbers.enabled || false;
+        }
+        if (startingPage && projectMeta.pageNumbers.startingPage) {
+            startingPage.value = projectMeta.pageNumbers.startingPage;
+        }
+        if (startingNumber && projectMeta.pageNumbers.startingNumber) {
+            startingNumber.value = projectMeta.pageNumbers.startingNumber;
+        }
+        // Update UI visibility for page number controls
+        applyPageNumberVisibility();
+    }
+
     updatePreview();
     autoSave();
 
@@ -656,6 +710,10 @@ function setCssValue(value) {
     const nextValue = value || '';
     if (cssEditor) {
         cssEditor.setValue(nextValue);
+        // Refresh CodeMirror to ensure display is updated
+        setTimeout(() => {
+            if (cssEditor) cssEditor.refresh();
+        }, 0);
     } else if (cssInput) {
         cssInput.value = nextValue;
     }
@@ -738,7 +796,7 @@ function applyPageNumberVisibility() {
     if (!previewContent) return;
     const isChecked = !!(pageNumbers && pageNumbers.checked);
     previewContent.classList.toggle('show-page-numbers', isChecked);
-    
+
     // Show/hide starting page and starting number inputs
     if (startingPageContainer) {
         startingPageContainer.style.display = isChecked ? 'flex' : 'none';
@@ -2172,8 +2230,79 @@ function dedentMarkdownBlock(text) {
     }).join('\n');
 }
 
+// ==================== Math (KaTeX) Extensions for Marked.js ====================
+
+function _katexRender(tex, displayMode) {
+    if (typeof katex === 'undefined') {
+        const esc = String(tex).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<code>${esc}</code>`;
+    }
+    try {
+        return katex.renderToString(tex, { displayMode, throwOnError: false, output: 'html' });
+    } catch (e) {
+        const esc = String(tex).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        return `<code>${esc}</code>`;
+    }
+}
+
+const mathBlockExtension = {
+    name: 'mathBlock',
+    level: 'block',
+    start(src) {
+        const candidates = [];
+        const a = src.indexOf('$$');
+        const b = src.indexOf('\\[');
+        // Only match [ when immediately followed by a newline (standalone opening bracket)
+        const c = src.indexOf('[\n');
+        if (a !== -1) candidates.push(a);
+        if (b !== -1) candidates.push(b);
+        if (c !== -1) candidates.push(c);
+        return candidates.length ? Math.min(...candidates) : undefined;
+    },
+    tokenizer(src) {
+        // $$...$$ display math
+        let m = src.match(/^\$\$([\s\S]*?)\$\$/);
+        if (m) return { type: 'mathBlock', raw: m[0], tex: m[1].trim() };
+        // \[...\] display math
+        m = src.match(/^\\\[([\s\S]*?)\\\]/);
+        if (m) return { type: 'mathBlock', raw: m[0], tex: m[1].trim() };
+        // [newline...newline] display math (shorthand syntax)
+        m = src.match(/^\[[ \t]*\n([\s\S]*?)\n[ \t]*\]/);
+        if (m) return { type: 'mathBlock', raw: m[0], tex: m[1].trim() };
+    },
+    renderer(token) {
+        return `<div class="math-block">${_katexRender(token.tex, true)}</div>\n`;
+    }
+};
+
+const mathInlineExtension = {
+    name: 'mathInline',
+    level: 'inline',
+    start(src) {
+        const a = src.indexOf('$');
+        const b = src.indexOf('\\(');
+        if (a === -1 && b === -1) return undefined;
+        if (a === -1) return b;
+        if (b === -1) return a;
+        return Math.min(a, b);
+    },
+    tokenizer(src) {
+        // $...$ inline math (single $, no leading/trailing whitespace in content)
+        let m = src.match(/^\$(?!\$)((?:[^$\n\\]|\\[\s\S])+?)\$/);
+        if (m && !/^\s/.test(m[1]) && !/\s$/.test(m[1])) {
+            return { type: 'mathInline', raw: m[0], tex: m[1].trim() };
+        }
+        // \(...\) inline math
+        m = src.match(/^\\\(([\s\S]*?)\\\)/);
+        if (m) return { type: 'mathInline', raw: m[0], tex: m[1].trim() };
+    },
+    renderer(token) {
+        return `<span class="math-inline">${_katexRender(token.tex, false)}</span>`;
+    }
+};
+
 try {
-    marked.use({ extensions: [layoutRowMarkedExtension] });
+    marked.use({ extensions: [mathBlockExtension, mathInlineExtension, layoutRowMarkedExtension] });
 } catch { /* ignore */ }
 
 // ==================== Initial Content ====================
@@ -2738,12 +2867,12 @@ function paginateContent(htmlContent) {
 
     const startPageIndex = getStartingPage();
     const startNum = getStartingNumber();
-    
+
     pages.forEach((pageContent, index) => {
         const pageDiv = document.createElement('div');
         pageDiv.className = 'a4-page';
         const currentPageIndex = index + 1; // 1-based page index
-        
+
         // Only show page numbers starting from startPageIndex
         if (currentPageIndex >= startPageIndex) {
             const offset = currentPageIndex - startPageIndex;
@@ -2754,7 +2883,7 @@ function paginateContent(htmlContent) {
             pageDiv.setAttribute('data-page', '');
             pageDiv.setAttribute('data-page-visible', 'false');
         }
-        
+
         pageDiv.innerHTML = pageContent;
         previewContent.appendChild(pageDiv);
     });
@@ -3176,6 +3305,7 @@ async function downloadPDF() {
         <link rel="preconnect" href="https://fonts.googleapis.com">
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
         <link rel="stylesheet" href="${googleFontsHref}">
+        <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
         <style>${printCss}</style>
         <style>${combinedStyles}</style>
     </head>
@@ -4139,3 +4269,628 @@ console.log('  Alt + N: Blank line');
 console.log('  Ctrl/Cmd + B: Bold');
 console.log('  Ctrl/Cmd + I: Italic');
 console.log('  Ctrl/Cmd + E: Inline code');
+
+
+// ==================== AI Chat Assistant ====================
+const aiChatPanel = document.getElementById('ai-chat-panel');
+const aiChatToggle = document.getElementById('ai-chat-toggle');
+const aiChatClose = document.getElementById('ai-chat-close');
+const aiChatMessages = document.getElementById('ai-chat-messages');
+const aiChatInput = document.getElementById('ai-chat-input');
+const aiChatSend = document.getElementById('ai-chat-send');
+const aiChatGenerating = document.getElementById('ai-chat-generating');
+const btnStopGenerate = document.getElementById('btn-stop-generate');
+const quotaValue = document.getElementById('quota-value');
+
+let aiAbortController = null;
+let aiCurrentEditorContent = '';
+let aiCurrentCssContent = '';
+let aiConversationHistory = []; // Track conversation in current session
+const MAX_CONVERSATION_HISTORY = 10; // Keep last 10 messages
+
+// UNDO/REDO History
+let aiChangeHistory = [];
+let aiHistoryIndex = -1;
+const MAX_HISTORY = 50;
+
+// Draggable panel
+let isDragging = false;
+let dragStartX = 0;
+let panelWidth = 550;
+
+// Toggle AI chat panel
+aiChatToggle?.addEventListener('click', () => {
+    aiChatPanel.classList.add('open');
+    aiChatInput.focus();
+    updateAiQuota();
+});
+
+aiChatClose?.addEventListener('click', () => {
+    aiChatPanel.classList.remove('open');
+    // Clear conversation history when closing chat
+    aiConversationHistory = [];
+});
+
+// Auto-resize textarea
+aiChatInput?.addEventListener('input', () => {
+    aiChatInput.style.height = 'auto';
+    aiChatInput.style.height = Math.min(aiChatInput.scrollHeight, 120) + 'px';
+});
+
+// Send message on Enter (Shift+Enter for newline)
+aiChatInput?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleAiSendMessage();
+    }
+});
+
+aiChatSend?.addEventListener('click', handleAiSendMessage);
+
+btnStopGenerate?.addEventListener('click', () => {
+    if (aiAbortController) {
+        aiAbortController.abort();
+        aiAbortController = null;
+        aiChatGenerating.style.display = 'none';
+        addAiMessage('assistant', 'Generation stopped.');
+    }
+});
+
+// Make AI panel draggable
+const aiChatHeader = document.querySelector('.ai-chat-header');
+aiChatHeader?.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.ai-chat-close')) return;
+    isDragging = true;
+    dragStartX = e.clientX;
+    panelWidth = aiChatPanel.offsetWidth;
+    aiChatPanel.classList.add('dragging');
+    aiChatHeader.classList.add('dragging');
+    e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+    if (!isDragging) return;
+    const deltaX = dragStartX - e.clientX;
+    const newWidth = Math.max(400, Math.min(800, panelWidth + deltaX));
+    aiChatPanel.style.width = newWidth + 'px';
+    aiChatPanel.style.right = aiChatPanel.classList.contains('open') ? '0' : '-' + newWidth + 'px';
+});
+
+document.addEventListener('mouseup', () => {
+    if (isDragging) {
+        isDragging = false;
+        aiChatPanel.classList.remove('dragging');
+        aiChatHeader?.classList.remove('dragging');
+        panelWidth = aiChatPanel.offsetWidth;
+    }
+});
+
+// Prevent page scroll when scrolling in AI chat
+aiChatMessages?.addEventListener('wheel', (e) => {
+    const isAtTop = aiChatMessages.scrollTop === 0;
+    const isAtBottom = aiChatMessages.scrollTop + aiChatMessages.clientHeight >= aiChatMessages.scrollHeight;
+
+    if ((isAtTop && e.deltaY < 0) || (isAtBottom && e.deltaY > 0)) {
+        e.preventDefault();
+    }
+    e.stopPropagation();
+}, { passive: false });
+
+async function handleAiSendMessage() {
+    const message = aiChatInput.value.trim();
+    if (!message || aiAbortController) return;
+
+    // Add user message
+    addAiMessage('user', message);
+    aiChatInput.value = '';
+    aiChatInput.style.height = 'auto';
+
+    // Add to conversation history
+    aiConversationHistory.push({
+        role: 'user',
+        content: message
+    });
+
+    // Show generating indicator
+    aiChatGenerating.style.display = 'flex';
+    aiChatSend.disabled = true;
+
+    // Save current state before AI changes
+    const currentMarkdown = getMarkdownValue();
+    const currentCss = getCustomCss();
+    const formattingExamples = formattingCodeBlock?.textContent || '';
+
+    try {
+        aiAbortController = new AbortController();
+
+        const response = await fetch('/api/ai/chat', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: message,
+                markdown: currentMarkdown,
+                css: currentCss,
+                formattingExamples: formattingExamples,
+                conversationHistory: aiConversationHistory.slice(-MAX_CONVERSATION_HISTORY) // Send last N messages
+            }),
+            signal: aiAbortController.signal
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'AI request failed');
+        }
+
+        const data = await response.json();
+
+        // Frontend fallback: sometimes the backend may pass through the model's raw JSON blob
+        // in `data.message` if parsing failed. If so, try to parse/repair and apply edits here.
+        // This ensures the editor still updates even when the message looks like:
+        // { "message": "...", "edits": [ ... ] }
+        if ((data?.newMarkdown === undefined || data?.newMarkdown === null) &&
+            (data?.newCss === undefined || data?.newCss === null) &&
+            typeof data?.message === 'string') {
+
+            const payload = tryParseAiEditPayloadFromText(data.message);
+            if (payload && Array.isArray(payload.edits) && payload.edits.length) {
+                const patched = applyAiEditsToContents(currentMarkdown, currentCss, payload.edits);
+                if (typeof payload.message === 'string' && payload.message.trim()) {
+                    data.message = payload.message;
+                }
+                if (patched.markdown !== currentMarkdown) data.newMarkdown = patched.markdown;
+                if (patched.css !== currentCss) data.newCss = patched.css;
+            }
+        }
+
+        // Hide generating indicator
+        aiChatGenerating.style.display = 'none';
+        aiChatSend.disabled = false;
+        aiAbortController = null;
+
+        // Add AI response
+        const changes = {
+            insertions: data.changes?.insertions || 0,
+            deletions: data.changes?.deletions || 0
+        };
+
+        // Save to history if there were actual changes
+        let changeId = null;
+        if ((data.newMarkdown !== undefined && data.newMarkdown !== null && data.newMarkdown !== currentMarkdown) ||
+            (data.newCss !== undefined && data.newCss !== null && data.newCss !== currentCss)) {
+
+            changeId = saveToHistory({
+                markdown: currentMarkdown,
+                css: currentCss,
+                newMarkdown: data.newMarkdown || currentMarkdown,
+                newCss: data.newCss || currentCss,
+                message: data.message
+            });
+        }
+
+        addAiMessage('assistant', data.message, changes, changeId);
+
+        // Add assistant response to conversation history
+        aiConversationHistory.push({
+            role: 'assistant',
+            content: data.message
+        });
+
+        // Keep history size manageable
+        if (aiConversationHistory.length > MAX_CONVERSATION_HISTORY * 2) {
+            aiConversationHistory = aiConversationHistory.slice(-MAX_CONVERSATION_HISTORY);
+        }
+
+        // Apply changes to editor with safety checks
+        let cssWasChanged = false;
+
+        // Safety check for markdown: don't apply if new content is empty but current has content
+        if (data.newMarkdown !== undefined && data.newMarkdown !== null && data.newMarkdown !== currentMarkdown) {
+            // Prevent accidental content deletion
+            if (data.newMarkdown.trim().length > 0 || currentMarkdown.trim().length === 0) {
+                setMarkdownValue(data.newMarkdown);
+                updatePreview();
+            } else {
+                console.warn('AI returned empty markdown - ignoring to prevent data loss');
+                showToast('⚠️ AI response error - content preserved', 3000);
+            }
+        }
+
+        // Safety check for CSS: don't apply if new content is empty but current has content
+        if (data.newCss !== undefined && data.newCss !== null && data.newCss !== currentCss) {
+            // Prevent accidental content deletion
+            if (data.newCss.trim().length > 0 || currentCss.trim().length === 0) {
+                setCustomCss(data.newCss);
+                updatePreview();
+                cssWasChanged = true;
+            } else {
+                console.warn('AI returned empty CSS - ignoring to prevent data loss');
+                showToast('⚠️ AI response error - CSS preserved', 3000);
+            }
+        }
+
+        // Switch to CSS tab if CSS was changed
+        if (cssWasChanged && data.newMarkdown === undefined) {
+            // Only CSS changed, switch to CSS tab
+            setEditorTab('css', false);
+        }
+
+        // Update quota
+        updateAiQuota();
+
+    } catch (error) {
+        aiChatGenerating.style.display = 'none';
+        aiChatSend.disabled = false;
+        aiAbortController = null;
+
+        if (error.name === 'AbortError') {
+            addAiMessage('assistant', 'Generation stopped.');
+        } else {
+            console.error('AI chat error:', error);
+            addAiMessage('assistant', `⚠️ Error: ${error.message}`);
+        }
+    }
+}
+
+function tryParseAiEditPayloadFromText(text) {
+    if (typeof text !== 'string') return null;
+    let src = text.trim();
+    if (!src) return null;
+
+    // Strip ```json fences if present
+    if (src.startsWith('```')) {
+        const lines = src.split('\n');
+        if (lines.length >= 2) src = lines.slice(1, -1).join('\n').trim();
+    }
+
+    const objStr = extractFirstJsonObjectString(src) || src;
+    try {
+        return JSON.parse(objStr);
+    } catch {
+        try {
+            return JSON.parse(escapeControlCharsInJsonStrings(objStr));
+        } catch {
+            return null;
+        }
+    }
+}
+
+function extractFirstJsonObjectString(text) {
+    if (typeof text !== 'string' || !text) return null;
+    const start = text.indexOf('{');
+    if (start < 0) return null;
+    let depth = 0;
+    let inString = false;
+    let escaping = false;
+    for (let i = start; i < text.length; i++) {
+        const ch = text[i];
+        if (inString) {
+            if (escaping) {
+                escaping = false;
+            } else if (ch === '\\') {
+                escaping = true;
+            } else if (ch === '"') {
+                inString = false;
+            }
+            continue;
+        }
+
+        if (ch === '"') {
+            inString = true;
+            escaping = false;
+            continue;
+        }
+        if (ch === '{') depth++;
+        else if (ch === '}') {
+            depth--;
+            if (depth === 0) return text.slice(start, i + 1);
+        }
+    }
+    return null;
+}
+
+function applyAiEditsToContents(markdownText, cssText, edits) {
+    let newMarkdown = String(markdownText ?? '');
+    let newCss = String(cssText ?? '');
+
+    for (const edit of edits) {
+        if (!edit) continue;
+        const target = String(edit.target || 'markdown').toLowerCase();
+        const search = edit.search;
+        const replace = String(edit.replace ?? '');
+        if (search === undefined || search === null) continue;
+        const searchStr = String(search);
+
+        if (target === 'markdown') {
+            if (searchStr === '__ALL__' || (searchStr === '' && newMarkdown.trim().length === 0)) {
+                newMarkdown = replace;
+            } else if (searchStr === '__END__') {
+                newMarkdown = newMarkdown ? (newMarkdown + '\n\n' + replace) : replace;
+            } else if (newMarkdown.includes(searchStr)) {
+                newMarkdown = newMarkdown.replace(searchStr, replace);
+            }
+        } else if (target === 'css') {
+            if (searchStr === '__ALL__' || (searchStr === '' && newCss.trim().length === 0)) {
+                newCss = replace;
+            } else if (searchStr === '__END__') {
+                newCss = newCss ? (newCss + '\n' + replace) : replace;
+            } else if (newCss.includes(searchStr)) {
+                newCss = newCss.replace(searchStr, replace);
+            }
+        }
+    }
+
+    return { markdown: newMarkdown, css: newCss };
+}
+
+function parsePotentialJsonMessage(text) {
+    if (typeof text !== 'string') return text;
+    const trimmed = text.trim();
+    // Check if it looks like the JSON structure we expect
+    if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('```json'))) {
+        try {
+            // Remove markdown code blocks if present
+            let clean = trimmed.replace(/^```(?:json)?/, '').replace(/```$/, '').trim();
+            const parsed = JSON.parse(clean);
+            if (parsed.message) {
+                return parsed.message;
+            }
+        } catch (e) {
+            // Fallthrough to repair attempt
+            try {
+                let clean = trimmed.replace(/^```(?:json)?/, '').replace(/```$/, '').trim();
+                clean = escapeControlCharsInJsonStrings(clean);
+                const parsed = JSON.parse(clean);
+                if (parsed && typeof parsed.message === 'string') return parsed.message;
+            } catch {
+                // If parse fails, return original text
+            }
+        }
+    }
+    return text;
+}
+
+function escapeControlCharsInJsonStrings(src) {
+    // Mirrors backend repair: escape literal newlines/tabs only inside strings.
+    if (typeof src !== 'string' || !src) return src;
+    let out = '';
+    let inString = false;
+    let escaping = false;
+    for (let i = 0; i < src.length; i++) {
+        const ch = src[i];
+        if (!inString) {
+            if (ch === '"') inString = true;
+            out += ch;
+            continue;
+        }
+
+        if (escaping) {
+            out += ch;
+            escaping = false;
+            continue;
+        }
+
+        if (ch === '\\') {
+            out += ch;
+            escaping = true;
+            continue;
+        }
+
+        if (ch === '"') {
+            out += ch;
+            inString = false;
+            continue;
+        }
+
+        if (ch === '\n') {
+            out += '\\n';
+            continue;
+        }
+        if (ch === '\r') {
+            out += '\\r';
+            continue;
+        }
+        if (ch === '\t') {
+            out += '\\t';
+            continue;
+        }
+        out += ch;
+    }
+    return out;
+}
+
+
+function addAiMessage(role, text, changes = null, changeId = null) {
+    // Remove welcome message if it exists
+    const welcome = aiChatMessages.querySelector('.ai-chat-welcome');
+    if (welcome) {
+        welcome.remove();
+    }
+
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `ai-message ${role}`;
+
+    // Clean up text if it's the raw JSON
+    if (role === 'assistant') {
+        text = parsePotentialJsonMessage(text);
+    }
+
+    // Convert markdown (basic)
+    let content = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/`([^`]+)`/g, '<code>$1</code>')
+        .replace(/\n\n/g, '<br><br>')
+        .replace(/\n/g, '<br>');
+
+    // Create bubble
+    let html = `<div class="message-bubble">${content}</div>`;
+
+    // Add metadata/actions (changes, undo, etc)
+    if (role === 'assistant') {
+        html += `<div class="message-info">`;
+
+        // Add changes/stats
+        if (changes && (changes.insertions > 0 || changes.deletions > 0)) {
+            html += `
+                <div class="message-changes">
+                    <span class="changes-insertions">+${changes.insertions}</span>
+                    <span class="changes-deletions">-${changes.deletions}</span>
+                </div>
+            `;
+        }
+
+        // Add actions (Undo/Redo)
+        if (changeId) {
+            html += `
+                <div class="message-actions">
+                    <button class="message-action-btn" onclick="undoChange('${changeId}', this)" title="Undo changes">
+                        ↺ Undo
+                    </button>
+                    <button class="message-action-btn redo-btn" onclick="redoChange('${changeId}', this)" title="Redo changes" style="display:none">
+                        ↻ Redo
+                    </button>
+                </div>
+            `;
+        }
+
+        html += `</div>`; // Close message-info
+    }
+
+    messageDiv.innerHTML = html;
+    aiChatMessages.appendChild(messageDiv);
+    aiChatMessages.scrollTop = aiChatMessages.scrollHeight;
+}
+
+async function updateAiQuota() {
+    try {
+        const response = await fetch('/api/ai/quota');
+        if (response.ok) {
+            const data = await response.json();
+            const { remaining, limit, resetTime, resetType } = data;
+
+            if (remaining !== undefined && limit !== undefined) {
+                quotaValue.textContent = `${remaining}/${limit} remaining`;
+
+                if (resetTime) {
+                    const resetDate = new Date(resetTime);
+                    const now = new Date();
+                    const diff = resetDate - now;
+
+                    if (diff > 0) {
+                        const minutes = Math.floor(diff / 60000);
+                        const hours = Math.floor(minutes / 60);
+
+                        if (hours > 0) {
+                            quotaValue.textContent += ` (resets in ${hours}h ${minutes % 60}m)`;
+                        } else {
+                            quotaValue.textContent += ` (resets in ${minutes}m)`;
+                        }
+                    }
+                }
+            } else {
+                quotaValue.textContent = 'Unlimited';
+            }
+        }
+    } catch (error) {
+        quotaValue.textContent = 'Unknown';
+        console.error('Failed to fetch quota:', error);
+    }
+}
+
+// UNDO/REDO History Management
+function saveToHistory(change) {
+    // Generate unique ID
+    const changeId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+
+    // Truncate history if we're not at the end
+    if (aiHistoryIndex < aiChangeHistory.length - 1) {
+        aiChangeHistory = aiChangeHistory.slice(0, aiHistoryIndex + 1);
+    }
+
+    // Add new change
+    aiChangeHistory.push({
+        id: changeId,
+        ...change,
+        applied: true
+    });
+
+    // Keep history within limit
+    if (aiChangeHistory.length > MAX_HISTORY) {
+        aiChangeHistory.shift();
+    }
+
+    aiHistoryIndex = aiChangeHistory.length - 1;
+    return changeId;
+}
+
+// --- Undo/Redo Functions ---
+
+function undoChange(changeId, btnElement) {
+    // Find change by ID (checking both top-level and in history array)
+    const change = aiChangeHistory.find(c => c.id === changeId);
+
+    // If not found in array, it might be that saveToHistory structure is different than expected
+    if (!change) {
+        console.error("Change not found:", changeId);
+        return;
+    }
+
+    // Apply old state (markdown/css from before the change)
+    // Note: saveToHistory stores { markdown, css, newMarkdown, newCss }
+    // 'markdown' is the OLD state.
+    if (change.markdown !== undefined) setMarkdownValue(change.markdown);
+    if (change.css !== undefined) setCustomCss(change.css);
+
+    updatePreview();
+
+    // Toggle buttons visibility if button element provided
+    // If called from onclick="undoChange('id', this)"
+    if (btnElement && btnElement instanceof Element) {
+        const parent = btnElement.parentElement;
+        const redoBtn = parent.querySelector('.redo-btn');
+        if (redoBtn) redoBtn.style.display = 'inline-flex';
+        btnElement.style.display = 'none';
+
+        // style the message bubble to look "undone"
+        const messageDiv = parent.closest('.ai-message');
+        if (messageDiv) messageDiv.classList.add('undone');
+    } else {
+        // Fallback for data-attribute based buttons (if any exist)
+        const undoBtn = document.querySelector(`button[onclick*="${changeId}"]`);
+        if (undoBtn) undoBtn.style.display = 'none';
+
+        const redoBtn = document.querySelector(`.redo-btn[onclick*="${changeId}"]`);
+        if (redoBtn) redoBtn.style.display = 'inline-flex';
+    }
+
+    showToast('↺ Changes undone', 2000);
+}
+
+function redoChange(changeId, btnElement) {
+    const change = aiChangeHistory.find(c => c.id === changeId);
+    if (!change) return;
+
+    // Apply new state
+    if (change.newMarkdown !== undefined) setMarkdownValue(change.newMarkdown);
+    if (change.newCss !== undefined) setCustomCss(change.newCss);
+
+    updatePreview();
+
+    // Toggle buttons
+    if (btnElement && btnElement instanceof Element) {
+        const parent = btnElement.parentElement;
+        const undoBtn = parent.querySelector('.message-action-btn:not(.redo-btn)');
+        if (undoBtn) undoBtn.style.display = 'inline-flex';
+        btnElement.style.display = 'none';
+
+        const messageDiv = parent.closest('.ai-message');
+        if (messageDiv) messageDiv.classList.remove('undone');
+    }
+
+    showToast('↻ Changes reapplied', 2000);
+}
+
+
+// Update quota every 30 seconds
+setInterval(updateAiQuota, 30000);
