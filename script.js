@@ -59,6 +59,7 @@ let previewSourceBlocks = [];
 let activePreviewSourceBlockId = null;
 let editorHoverFrame = null;
 let lastEditorHoverLine = null;
+let previewRenderVersion = 0;
 
 // ==================== MarkDownForge Project (.mdfproj) ====================
 // A .mdfproj is a ZIP with:
@@ -2598,12 +2599,47 @@ function highlightPreviewSourceLine(lineNumber) {
     highlightPreviewSourceBlock(block);
 }
 
-function updatePreview() {
+function waitForPreviewImagesInHtml(htmlContent, timeoutMs = 1200) {
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = htmlContent;
+    const srcs = Array.from(wrapper.querySelectorAll('img'))
+        .map((img) => img.getAttribute('src'))
+        .filter(Boolean);
+
+    if (!srcs.length) return Promise.resolve();
+
+    const uniqueSrcs = Array.from(new Set(srcs));
+    const waits = uniqueSrcs.map((src) => new Promise((resolve) => {
+        const img = new Image();
+        let settled = false;
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            resolve();
+        };
+
+        img.onload = done;
+        img.onerror = done;
+        img.src = src;
+
+        if (img.complete) done();
+    }));
+
+    return Promise.race([
+        Promise.all(waits),
+        new Promise((resolve) => setTimeout(resolve, timeoutMs))
+    ]);
+}
+
+async function updatePreview() {
+    const renderVersion = ++previewRenderVersion;
     const markdownText = getMarkdownValue();
     const annotatedHtml = renderMarkdownWithSourceAnnotations(markdownText);
     const strictAnchorsHtml = applyStrictHeadingIds(annotatedHtml);
     const withTOC = replaceTOCMarkers(strictAnchorsHtml);
     const withSessionImages = rewriteSessionImageUrlsInHtml(withTOC, currentSessionId);
+    await waitForPreviewImagesInHtml(withSessionImages);
+    if (renderVersion !== previewRenderVersion) return;
     paginateContent(withSessionImages);
 }
 
