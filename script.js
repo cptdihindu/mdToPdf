@@ -55,6 +55,10 @@ let defaultMarkdownCssText = '';
 let currentDocBaseName = 'document';
 let markdownEditor = null;
 let cssEditor = null;
+let previewSourceBlocks = [];
+let activePreviewSourceBlockId = null;
+let editorHoverFrame = null;
+let lastEditorHoverLine = null;
 
 // ==================== MarkDownForge Project (.mdfproj) ====================
 // A .mdfproj is a ZIP with:
@@ -2334,10 +2338,270 @@ setMarkdownValue(defaultMarkdown);
 
 // ==================== Core Functions ====================
 
+function buildPreviewSourceBlocks(markdownText) {
+    const blocks = [];
+    const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
+
+    const isBlank = (index) => !String(lines[index] || '').trim();
+    const isFenceStart = (line) => /^ {0,3}(```+|~~~+)/.test(line);
+    const isAtxHeading = (line) => /^ {0,3}#{1,6}\s+\S/.test(line);
+    const isHr = (line) => /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/.test(line);
+    const isBlockquote = (line) => /^ {0,3}>\s?/.test(line);
+    const isListItem = (line) => /^ {0,3}(?:[-+*]|\d+[.)])\s+/.test(line);
+    const isHtmlBlockStart = (line) => /^ {0,3}<\/?[A-Za-z][^>]*>\s*$/.test(line) || /^ {0,3}<[A-Za-z][\s\S]*?>/.test(line);
+    const isTableSeparator = (line) => /^ {0,3}\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+
+    const nextBlockEnd = (startIndex) => {
+        const first = String(lines[startIndex] || '');
+
+        if (isFenceStart(first)) {
+            const marker = first.trimStart().startsWith('~') ? '~' : '`';
+            for (let i = startIndex + 1; i < lines.length; i++) {
+                const t = String(lines[i] || '').trimStart();
+                if (t.startsWith(marker.repeat(3))) return i;
+            }
+            return lines.length - 1;
+        }
+
+        if (startIndex + 1 < lines.length && isTableSeparator(String(lines[startIndex + 1] || ''))) {
+            let i = startIndex + 2;
+            while (i < lines.length && String(lines[i] || '').trim() && String(lines[i] || '').includes('|')) i++;
+            return i - 1;
+        }
+
+        if (isAtxHeading(first) || isHr(first)) return startIndex;
+
+        if (isBlockquote(first)) {
+            let i = startIndex + 1;
+            while (i < lines.length && (isBlockquote(String(lines[i] || '')) || isBlank(i))) i++;
+            while (i > startIndex && isBlank(i - 1)) i--;
+            return i - 1;
+        }
+
+        if (isListItem(first)) {
+            let i = startIndex + 1;
+            while (i < lines.length) {
+                const line = String(lines[i] || '');
+                if (isBlank(i)) {
+                    const next = i + 1;
+                    if (next < lines.length && (/^ {2,}\S/.test(String(lines[next] || '')) || isListItem(String(lines[next] || '')))) {
+                        i++;
+                        continue;
+                    }
+                    break;
+                }
+                if (isListItem(line) || /^ {2,}\S/.test(line)) {
+                    i++;
+                    continue;
+                }
+                break;
+            }
+            return i - 1;
+        }
+
+        if (isHtmlBlockStart(first)) {
+            const tagMatch = first.match(/^ {0,3}<([A-Za-z][\w:-]*)\b/i);
+            const tag = tagMatch ? String(tagMatch[1] || '').toLowerCase() : '';
+            if (tag && !/\/>\s*$/.test(first) && !new RegExp(`<\\/${tag}\\s*>`, 'i').test(first)) {
+                for (let i = startIndex + 1; i < lines.length; i++) {
+                    if (new RegExp(`<\\/${tag}\\s*>`, 'i').test(String(lines[i] || ''))) return i;
+                    if (isBlank(i)) return i - 1;
+                }
+            }
+            return startIndex;
+        }
+
+        let i = startIndex + 1;
+        while (i < lines.length) {
+            const line = String(lines[i] || '');
+            if (isBlank(i) || isAtxHeading(line) || isFenceStart(line) || isHr(line) || isBlockquote(line) || isListItem(line)) break;
+            if (i + 1 < lines.length && isTableSeparator(String(lines[i + 1] || ''))) break;
+            i++;
+        }
+        return i - 1;
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+        if (isBlank(i)) continue;
+        const endIndex = nextBlockEnd(i);
+        const id = String(blocks.length + 1);
+        blocks.push({
+            id,
+            startLine: i + 1,
+            endLine: Math.max(i, endIndex) + 1
+        });
+        i = Math.max(i, endIndex);
+    }
+
+    return blocks;
+}
+
+function markdownWithPreviewSourceMarkers(markdownText, blocks) {
+    const lines = String(markdownText || '').replace(/\r\n?/g, '\n').split('\n');
+    const markersByLine = new Map();
+
+    blocks.forEach((block) => {
+        markersByLine.set(block.startLine, `<!-- md2pdf-source-block:${block.id} -->`);
+    });
+
+    const out = [];
+    for (let i = 0; i < lines.length; i++) {
+        const lineNumber = i + 1;
+        if (markersByLine.has(lineNumber)) out.push(markersByLine.get(lineNumber));
+        out.push(lines[i]);
+    }
+
+    return out.join('\n');
+}
+
+function normalizePreviewSourceMarkerComments(wrapper) {
+    if (!wrapper) return;
+    const comments = [];
+
+    const visit = (node) => {
+        Array.from(node.childNodes || []).forEach((child) => {
+            if (child.nodeType === Node.COMMENT_NODE &&
+                /^\s*md2pdf-source-block:\d+\s*$/.test(String(child.nodeValue || ''))) {
+                comments.push(child);
+                return;
+            }
+            visit(child);
+        });
+    };
+
+    visit(wrapper);
+
+    comments.forEach((comment) => {
+        if (!comment.parentNode || comment.parentNode === wrapper) return;
+
+        let topLevel = comment.parentNode;
+        while (topLevel.parentNode && topLevel.parentNode !== wrapper) {
+            topLevel = topLevel.parentNode;
+        }
+        if (!topLevel || topLevel.parentNode !== wrapper) return;
+
+        const marker = document.createComment(comment.nodeValue || '');
+        wrapper.insertBefore(marker, topLevel);
+        comment.remove();
+
+        const hasVisibleText = String(topLevel.textContent || '').trim();
+        const hasRealElement = Array.from(topLevel.querySelectorAll('*')).some((el) => {
+            return !/^\s*md2pdf-source-block:\d+\s*$/.test(String(el.textContent || ''));
+        });
+        if (!hasVisibleText && !hasRealElement) topLevel.remove();
+    });
+}
+
+function renderMarkdownWithSourceAnnotations(markdownText) {
+    previewSourceBlocks = buildPreviewSourceBlocks(markdownText);
+    activePreviewSourceBlockId = null;
+    lastEditorHoverLine = null;
+
+    const markedText = markdownWithPreviewSourceMarkers(markdownText, previewSourceBlocks);
+    const htmlContent = marked.parse(markedText);
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = htmlContent;
+    normalizePreviewSourceMarkerComments(wrapper);
+
+    const blockById = new Map(previewSourceBlocks.map((block) => [block.id, block]));
+    let activeBlock = null;
+    const nodes = Array.from(wrapper.childNodes);
+
+    nodes.forEach((node) => {
+        if (node.nodeType === Node.COMMENT_NODE) {
+            const match = String(node.nodeValue || '').match(/^\s*md2pdf-source-block:(\d+)\s*$/);
+            if (match) {
+                activeBlock = blockById.get(match[1]) || null;
+                node.remove();
+            }
+            return;
+        }
+
+        if (node.nodeType !== Node.ELEMENT_NODE || !activeBlock) return;
+
+        node.setAttribute('data-source-block', activeBlock.id);
+        node.setAttribute('data-source-start-line', String(activeBlock.startLine));
+        node.setAttribute('data-source-end-line', String(activeBlock.endLine));
+
+        const nextMarker = node.nextSibling;
+        if (nextMarker && nextMarker.nodeType === Node.COMMENT_NODE &&
+            /^\s*md2pdf-source-block:\d+\s*$/.test(String(nextMarker.nodeValue || ''))) {
+            activeBlock = null;
+        }
+    });
+
+    return wrapper.innerHTML;
+}
+
+function findPreviewSourceBlockForLine(lineNumber) {
+    const line = Number(lineNumber);
+    if (!Number.isFinite(line) || line < 1) return null;
+
+    return previewSourceBlocks.find((block) => {
+        return line >= block.startLine && line <= block.endLine;
+    }) || null;
+}
+
+function clearPreviewSourceHighlight() {
+    if (!previewContent || !activePreviewSourceBlockId) return;
+    previewContent.querySelectorAll('.preview-source-highlight').forEach((el) => {
+        el.classList.remove('preview-source-highlight');
+    });
+    activePreviewSourceBlockId = null;
+    lastEditorHoverLine = null;
+}
+
+function isElementMostlyVisibleInContainer(element, container) {
+    if (!element || !container) return true;
+    const elementRect = element.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    const margin = 24;
+    return elementRect.top >= containerRect.top + margin &&
+        elementRect.bottom <= containerRect.bottom - margin;
+}
+
+function highlightPreviewSourceBlock(block) {
+    if (!previewContent || !block) {
+        clearPreviewSourceHighlight();
+        return;
+    }
+
+    if (activePreviewSourceBlockId === block.id) return;
+
+    previewContent.querySelectorAll('.preview-source-highlight').forEach((el) => {
+        el.classList.remove('preview-source-highlight');
+    });
+
+    const selector = `[data-source-block="${CSS.escape(block.id)}"]`;
+    const targets = Array.from(previewContent.querySelectorAll(selector));
+    const target = targets[0];
+    if (!targets.length || !target) {
+        activePreviewSourceBlockId = null;
+        return;
+    }
+
+    targets.forEach((el) => el.classList.add('preview-source-highlight'));
+    activePreviewSourceBlockId = block.id;
+
+    const previewScroller = previewContent.closest('.preview-wrapper') || previewContent.parentElement;
+    if (previewScroller && !isElementMostlyVisibleInContainer(target, previewScroller)) {
+        target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    }
+}
+
+function highlightPreviewSourceLine(lineNumber) {
+    const block = findPreviewSourceBlockForLine(lineNumber);
+    if (!block) {
+        clearPreviewSourceHighlight();
+        return;
+    }
+    highlightPreviewSourceBlock(block);
+}
+
 function updatePreview() {
     const markdownText = getMarkdownValue();
-    const htmlContent = marked.parse(markdownText);
-    const strictAnchorsHtml = applyStrictHeadingIds(htmlContent);
+    const annotatedHtml = renderMarkdownWithSourceAnnotations(markdownText);
+    const strictAnchorsHtml = applyStrictHeadingIds(annotatedHtml);
     const withTOC = replaceTOCMarkers(strictAnchorsHtml);
     const withSessionImages = rewriteSessionImageUrlsInHtml(withTOC, currentSessionId);
     paginateContent(withSessionImages);
@@ -2458,7 +2722,7 @@ function rewriteLayoutTag(tagText) {
 
 function replaceTOCMarkers(htmlText) {
     // Find all [TOC] markers (they'll be wrapped in <p> tags by marked.js)
-    const tocMarkerRegex = /<p>\[TOC\]<\/p>/gi;
+    const tocMarkerRegex = /<p\b[^>]*>\[TOC\]<\/p>/gi;
 
     if (!tocMarkerRegex.test(htmlText)) {
         return htmlText; // No TOC markers found
@@ -3233,6 +3497,7 @@ async function downloadPDF() {
     if (!pdfFilename) return;
 
     showLoading();
+    clearPreviewSourceHighlight();
 
     let pdfContainer = null;
 
@@ -4059,6 +4324,106 @@ function handleMarkdownEditorKeydown(event, target) {
     }
 }
 
+function getTextareaLineFromMouse(textarea, event) {
+    if (!textarea || !event) return null;
+    const rect = textarea.getBoundingClientRect();
+    const style = window.getComputedStyle(textarea);
+    const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.6 || 20;
+    const paddingTop = parseFloat(style.paddingTop) || 0;
+    const y = event.clientY - rect.top + textarea.scrollTop - paddingTop;
+    if (y < 0) return null;
+    const line = Math.max(1, Math.floor(y / lineHeight) + 1);
+    const textLine = String((textarea.value || '').replace(/\r\n?/g, '\n').split('\n')[line - 1] || '');
+    return textLine.trim() ? line : null;
+}
+
+function getCodeMirrorLineFromMouse(cm, event) {
+    if (!cm || !event) return null;
+    const wrapper = cm.getWrapperElement();
+    if (!wrapper || !wrapper.contains(event.target)) return null;
+    if (event.target && event.target.closest && event.target.closest('.CodeMirror-gutters')) return null;
+    if (event.target && event.target.closest && !event.target.closest('.CodeMirror-line')) return null;
+
+    const pos = cm.coordsChar({
+        left: event.clientX,
+        top: event.clientY
+    }, 'window');
+
+    if (!pos || !Number.isFinite(pos.line)) return null;
+
+    const doc = cm.getDoc();
+    const lineText = String(doc.getLine(pos.line) || '');
+    if (!lineText.trim()) return null;
+
+    const startCoords = cm.charCoords({ line: pos.line, ch: 0 }, 'window');
+    const endCoords = cm.charCoords({ line: pos.line, ch: Math.max(0, lineText.length) }, 'window');
+    const top = Math.min(startCoords.top, endCoords.top) - 3;
+    const bottom = Math.max(startCoords.bottom, endCoords.bottom) + 3;
+    const left = Math.min(startCoords.left, endCoords.left) - 8;
+    const right = Math.max(startCoords.right, endCoords.right) + 24;
+
+    if (event.clientY < top || event.clientY > bottom) return null;
+    if (event.clientX < left || event.clientX > right) return null;
+
+    return pos.line + 1;
+}
+
+function handleMarkdownEditorHoverLine(lineNumber) {
+    const line = Number(lineNumber);
+    if (!Number.isFinite(line) || line < 1) {
+        clearPreviewSourceHighlight();
+        return;
+    }
+    if (line === lastEditorHoverLine) return;
+    lastEditorHoverLine = line;
+    highlightPreviewSourceLine(line);
+}
+
+function bindPreviewSourceHover() {
+    if (markdownEditor) {
+        const wrapper = markdownEditor.getWrapperElement();
+        if (!wrapper) return;
+
+        wrapper.addEventListener('mousemove', (event) => {
+            if (editorHoverFrame) cancelAnimationFrame(editorHoverFrame);
+            editorHoverFrame = requestAnimationFrame(() => {
+                editorHoverFrame = null;
+                try {
+                    handleMarkdownEditorHoverLine(getCodeMirrorLineFromMouse(markdownEditor, event));
+                } catch {
+                    clearPreviewSourceHighlight();
+                }
+            });
+        });
+
+        wrapper.addEventListener('mouseleave', () => {
+            if (editorHoverFrame) {
+                cancelAnimationFrame(editorHoverFrame);
+                editorHoverFrame = null;
+            }
+            clearPreviewSourceHighlight();
+        });
+        return;
+    }
+
+    if (markdownInput) {
+        markdownInput.addEventListener('mousemove', (event) => {
+            if (editorHoverFrame) cancelAnimationFrame(editorHoverFrame);
+            editorHoverFrame = requestAnimationFrame(() => {
+                editorHoverFrame = null;
+                handleMarkdownEditorHoverLine(getTextareaLineFromMouse(markdownInput, event));
+            });
+        });
+        markdownInput.addEventListener('mouseleave', () => {
+            if (editorHoverFrame) {
+                cancelAnimationFrame(editorHoverFrame);
+                editorHoverFrame = null;
+            }
+            clearPreviewSourceHighlight();
+        });
+    }
+}
+
 function bindEditorEvents() {
     if (markdownEditor) {
         markdownEditor.on('change', handleMarkdownInputChange);
@@ -4089,6 +4454,7 @@ function bindEditorEvents() {
 
     // Right-click context menu for markdown editor formatting.
     bindEditorContextMenu();
+    bindPreviewSourceHover();
 }
 
 btnDownload.addEventListener('click', downloadPDF);
