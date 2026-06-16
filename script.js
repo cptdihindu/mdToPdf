@@ -63,6 +63,10 @@ let previewRenderVersion = 0;
 let previewHoverFrame = null;
 let activeEditorSourceBlockId = null;
 let activeEditorSourceLineHandles = [];
+let selectedPreviewImage = null;
+let imageResizeOverlay = null;
+let imageResizeHandle = null;
+let imageResizeState = null;
 
 // ==================== MarkDownForge Project (.mdfproj) ====================
 // A .mdfproj is a ZIP with:
@@ -2501,6 +2505,7 @@ function renderMarkdownWithSourceAnnotations(markdownText) {
     activePreviewSourceBlockId = null;
     lastEditorHoverLine = null;
     clearEditorSourceHighlight();
+    clearPreviewImageSelection();
 
     const markedText = markdownWithPreviewSourceMarkers(markdownText, previewSourceBlocks);
     const htmlContent = marked.parse(markedText);
@@ -2614,6 +2619,203 @@ function highlightEditorSourceBlockFromElement(sourceElement) {
         const style = window.getComputedStyle(markdownInput);
         const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.6 || 20;
         markdownInput.scrollTop = Math.max(0, (startLine - 1) * lineHeight - markdownInput.clientHeight / 3);
+    }
+}
+
+function ensureImageResizeOverlay() {
+    if (imageResizeOverlay && imageResizeHandle) return imageResizeOverlay;
+
+    const previewWrapper = previewContent ? previewContent.closest('.preview-wrapper') : null;
+    if (!previewWrapper) return null;
+
+    imageResizeOverlay = document.createElement('div');
+    imageResizeOverlay.className = 'preview-image-resize-overlay';
+    imageResizeOverlay.hidden = true;
+
+    imageResizeHandle = document.createElement('button');
+    imageResizeHandle.type = 'button';
+    imageResizeHandle.className = 'preview-image-resize-handle';
+    imageResizeHandle.setAttribute('aria-label', 'Resize image');
+    imageResizeOverlay.appendChild(imageResizeHandle);
+    previewWrapper.appendChild(imageResizeOverlay);
+
+    imageResizeHandle.addEventListener('pointerdown', startPreviewImageResize);
+    return imageResizeOverlay;
+}
+
+function updateImageResizeOverlayPosition() {
+    if (!selectedPreviewImage || !imageResizeOverlay) return;
+    const previewWrapper = previewContent ? previewContent.closest('.preview-wrapper') : null;
+    if (!previewWrapper) return;
+
+    const rect = selectedPreviewImage.getBoundingClientRect();
+    const wrapperRect = previewWrapper.getBoundingClientRect();
+
+    imageResizeOverlay.hidden = false;
+    imageResizeOverlay.style.left = `${rect.left - wrapperRect.left + previewWrapper.scrollLeft}px`;
+    imageResizeOverlay.style.top = `${rect.top - wrapperRect.top + previewWrapper.scrollTop}px`;
+    imageResizeOverlay.style.width = `${rect.width}px`;
+    imageResizeOverlay.style.height = `${rect.height}px`;
+}
+
+function clearPreviewImageSelection() {
+    if (selectedPreviewImage) selectedPreviewImage.classList.remove('preview-image-selected');
+    selectedPreviewImage = null;
+    imageResizeState = null;
+    if (imageResizeOverlay) imageResizeOverlay.hidden = true;
+}
+
+function extractRelativeImageSrc(src) {
+    const value = String(src || '').trim();
+    if (!value) return '';
+    const match = value.match(/(?:^|\/)(images\/[^?#"']+)/i);
+    if (match) return match[1];
+    return value;
+}
+
+function getSourceLines(startLine, endLine) {
+    const text = getMarkdownValue().replace(/\r\n?/g, '\n');
+    const lines = text.split('\n');
+    const startIndex = Math.max(0, Number(startLine) - 1);
+    const endIndex = Math.max(startIndex, Math.min(lines.length - 1, Number(endLine) - 1));
+    return { text, lines, startIndex, endIndex };
+}
+
+function findImageTagInSourceRange(startLine, endLine, src) {
+    const relSrc = extractRelativeImageSrc(src);
+    const source = getSourceLines(startLine, endLine);
+    const rangeText = source.lines.slice(source.startIndex, source.endIndex + 1).join('\n');
+    const imgRe = /<img\b[^>]*>/gi;
+    let match;
+
+    while ((match = imgRe.exec(rangeText)) !== null) {
+        const tag = match[0];
+        const tagSrcMatch = tag.match(/\bsrc\s*=\s*(["'])(.*?)\1/i);
+        const tagSrc = tagSrcMatch ? extractRelativeImageSrc(tagSrcMatch[2]) : '';
+        if (relSrc && tagSrc && tagSrc !== relSrc) continue;
+
+        const before = rangeText.slice(0, match.index);
+        const lineOffset = (before.match(/\n/g) || []).length;
+        const lineIndex = source.startIndex + lineOffset;
+        const lineStartInRange = before.lastIndexOf('\n') + 1;
+        const chStart = before.length - lineStartInRange;
+        const chEnd = chStart + tag.length;
+        return { tag, lineIndex, chStart, chEnd };
+    }
+
+    return null;
+}
+
+function setPreviewImageWidthInEditor(img, widthPx) {
+    if (!img) return false;
+    const startLine = parseInt(img.getAttribute('data-source-start-line') || img.closest('[data-source-start-line]')?.getAttribute('data-source-start-line') || '', 10);
+    const endLine = parseInt(img.getAttribute('data-source-end-line') || img.closest('[data-source-end-line]')?.getAttribute('data-source-end-line') || '', 10);
+    if (!Number.isFinite(startLine) || !Number.isFinite(endLine)) return false;
+
+    const found = findImageTagInSourceRange(startLine, endLine, img.getAttribute('src') || '');
+    if (!found) return false;
+
+    const width = Math.max(24, Math.round(Number(widthPx) || 0));
+    let nextTag = found.tag;
+    if (/\bwidth\s*=\s*(["']).*?\1/i.test(nextTag)) {
+        nextTag = nextTag.replace(/\bwidth\s*=\s*(["']).*?\1/i, `width="${width}"`);
+    } else {
+        nextTag = nextTag.replace(/<img\b/i, `<img width="${width}"`);
+    }
+    nextTag = nextTag.replace(/\s+\bheight\s*=\s*(["']).*?\1/gi, '');
+
+    if (markdownEditor) {
+        const doc = markdownEditor.getDoc();
+        doc.replaceRange(
+            nextTag,
+            { line: found.lineIndex, ch: found.chStart },
+            { line: found.lineIndex, ch: found.chEnd },
+            'image-resize'
+        );
+        return true;
+    }
+
+    if (markdownInput) {
+        const value = markdownInput.value.replace(/\r\n?/g, '\n');
+        const lines = value.split('\n');
+        const line = lines[found.lineIndex] || '';
+        lines[found.lineIndex] = line.slice(0, found.chStart) + nextTag + line.slice(found.chEnd);
+        markdownInput.value = lines.join('\n');
+        handleMarkdownInputChange();
+        return true;
+    }
+
+    return false;
+}
+
+function selectPreviewImage(img) {
+    if (!img || !previewContent || !previewContent.contains(img)) {
+        clearPreviewImageSelection();
+        return;
+    }
+
+    clearPreviewImageSelection();
+    selectedPreviewImage = img;
+    selectedPreviewImage.classList.add('preview-image-selected');
+    ensureImageResizeOverlay();
+    updateImageResizeOverlayPosition();
+}
+
+function startPreviewImageResize(event) {
+    if (!selectedPreviewImage) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const zoom = getCurrentPreviewZoom() || 1;
+    const rect = selectedPreviewImage.getBoundingClientRect();
+    const page = selectedPreviewImage.closest('.a4-page');
+    const pageRect = page ? page.getBoundingClientRect() : null;
+    const maxCssWidth = pageRect ? Math.max(80, (pageRect.width - 40) / zoom) : 900;
+
+    imageResizeState = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startWidthCss: rect.width / zoom,
+        maxCssWidth
+    };
+
+    try { imageResizeHandle.setPointerCapture(event.pointerId); } catch { /* ignore */ }
+    document.body.classList.add('is-resizing-preview-image');
+    document.addEventListener('pointermove', handlePreviewImageResizeMove);
+    document.addEventListener('pointerup', finishPreviewImageResize, { once: true });
+}
+
+function handlePreviewImageResizeMove(event) {
+    if (!imageResizeState || !selectedPreviewImage) return;
+    const zoom = getCurrentPreviewZoom() || 1;
+    const deltaCss = (event.clientX - imageResizeState.startX) / zoom;
+    const nextWidth = Math.max(48, Math.min(imageResizeState.maxCssWidth, imageResizeState.startWidthCss + deltaCss));
+    selectedPreviewImage.style.width = `${Math.round(nextWidth)}px`;
+    selectedPreviewImage.style.height = 'auto';
+    updateImageResizeOverlayPosition();
+}
+
+function finishPreviewImageResize(event) {
+    document.removeEventListener('pointermove', handlePreviewImageResizeMove);
+    document.body.classList.remove('is-resizing-preview-image');
+
+    if (!imageResizeState || !selectedPreviewImage) {
+        imageResizeState = null;
+        return;
+    }
+
+    try { imageResizeHandle.releasePointerCapture(imageResizeState.pointerId); } catch { /* ignore */ }
+
+    const zoom = getCurrentPreviewZoom() || 1;
+    const finalWidth = selectedPreviewImage.getBoundingClientRect().width / zoom;
+    const updated = setPreviewImageWidthInEditor(selectedPreviewImage, finalWidth);
+    imageResizeState = null;
+
+    if (!updated) {
+        selectedPreviewImage.style.width = '';
+        selectedPreviewImage.style.height = '';
+        updateImageResizeOverlayPosition();
+        showToast('Could not find this image tag in the editor');
     }
 }
 
@@ -3407,6 +3609,7 @@ function setPreviewZoom(zoomLevel) {
     }
 
     previewContent.dataset.zoom = String(nextZoom);
+    updateImageResizeOverlayPosition();
 
     // Persist across refresh.
     try {
@@ -4497,12 +4700,36 @@ function bindEditorSourceHover() {
             if (!target || !previewContent.contains(target)) {
                 clearEditorSourceHighlight();
                 clearPreviewSourceHighlight();
+                clearPreviewImageSelection();
                 return;
+            }
+
+            const img = event.target && event.target.closest
+                ? event.target.closest('img')
+                : null;
+            if (img && previewContent.contains(img)) {
+                selectPreviewImage(img);
+            } else {
+                clearPreviewImageSelection();
             }
 
             clearPreviewSourceHighlight();
             highlightEditorSourceBlockFromElement(target);
         });
+    });
+}
+
+function bindPreviewImageResizeUi() {
+    window.addEventListener('resize', updateImageResizeOverlayPosition);
+    window.addEventListener('scroll', updateImageResizeOverlayPosition, { passive: true });
+
+    const previewWrapper = previewContent ? previewContent.closest('.preview-wrapper') : null;
+    if (previewWrapper) {
+        previewWrapper.addEventListener('scroll', updateImageResizeOverlayPosition, { passive: true });
+    }
+
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') clearPreviewImageSelection();
     });
 }
 
@@ -4568,6 +4795,7 @@ function bindEditorEvents() {
     bindEditorContextMenu();
     bindPreviewSourceHover();
     bindEditorSourceHover();
+    bindPreviewImageResizeUi();
 }
 
 btnDownload.addEventListener('click', downloadPDF);

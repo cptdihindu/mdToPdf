@@ -664,6 +664,7 @@ body {
     flex-direction: column;
     align-items: center;
     gap: 2rem;
+    position: relative;
 }
 
 /* ==================== Fullscreen Preview Fix ==================== */
@@ -788,6 +789,44 @@ body {
     outline-offset: 4px;
     box-shadow: 0 0 0 6px rgba(245, 158, 11, 0.14);
     border-radius: 3px;
+}
+
+.preview-content img.preview-image-selected {
+    outline: 2px solid rgba(59, 130, 246, 0.95);
+    outline-offset: 3px;
+}
+
+.preview-image-resize-overlay {
+    position: absolute;
+    z-index: 1200;
+    pointer-events: none;
+    border: 1px solid rgba(59, 130, 246, 0.75);
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.16);
+}
+
+.preview-image-resize-overlay[hidden] {
+    display: none;
+}
+
+.preview-image-resize-handle {
+    position: absolute;
+    right: -7px;
+    bottom: -7px;
+    width: 14px;
+    height: 14px;
+    padding: 0;
+    border: 2px solid #ffffff;
+    border-radius: 50%;
+    background: #2563eb;
+    cursor: nwse-resize;
+    pointer-events: auto;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.24);
+}
+
+.is-resizing-preview-image,
+.is-resizing-preview-image * {
+    cursor: nwse-resize !important;
+    user-select: none !important;
 }
 
 /* Preview content inherits styles from markdown-styles.css */
