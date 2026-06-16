@@ -60,6 +60,9 @@ let activePreviewSourceBlockId = null;
 let editorHoverFrame = null;
 let lastEditorHoverLine = null;
 let previewRenderVersion = 0;
+let previewHoverFrame = null;
+let activeEditorSourceBlockId = null;
+let activeEditorSourceLineHandles = [];
 
 // ==================== MarkDownForge Project (.mdfproj) ====================
 // A .mdfproj is a ZIP with:
@@ -2497,6 +2500,7 @@ function renderMarkdownWithSourceAnnotations(markdownText) {
     previewSourceBlocks = buildPreviewSourceBlocks(markdownText);
     activePreviewSourceBlockId = null;
     lastEditorHoverLine = null;
+    clearEditorSourceHighlight();
 
     const markedText = markdownWithPreviewSourceMarkers(markdownText, previewSourceBlocks);
     const htmlContent = marked.parse(markedText);
@@ -2550,6 +2554,67 @@ function clearPreviewSourceHighlight() {
     });
     activePreviewSourceBlockId = null;
     lastEditorHoverLine = null;
+}
+
+function clearEditorSourceHighlight() {
+    if (!activeEditorSourceBlockId && !activeEditorSourceLineHandles.length) return;
+
+    if (markdownEditor) {
+        activeEditorSourceLineHandles.forEach((handle) => {
+            try {
+                markdownEditor.removeLineClass(handle, 'background', 'editor-source-highlight');
+                markdownEditor.removeLineClass(handle, 'wrap', 'editor-source-highlight-wrap');
+            } catch { /* ignore */ }
+        });
+    }
+
+    activeEditorSourceLineHandles = [];
+    activeEditorSourceBlockId = null;
+}
+
+function highlightEditorSourceBlockFromElement(sourceElement) {
+    if (!sourceElement) {
+        clearEditorSourceHighlight();
+        return;
+    }
+
+    const blockId = sourceElement.getAttribute('data-source-block');
+    const startLine = parseInt(sourceElement.getAttribute('data-source-start-line') || '', 10);
+    const endLine = parseInt(sourceElement.getAttribute('data-source-end-line') || '', 10);
+
+    if (!blockId || !Number.isFinite(startLine) || !Number.isFinite(endLine)) {
+        clearEditorSourceHighlight();
+        return;
+    }
+
+    if (activeEditorSourceBlockId === blockId) return;
+    clearEditorSourceHighlight();
+    activeEditorSourceBlockId = blockId;
+
+    if (markdownEditor) {
+        const doc = markdownEditor.getDoc();
+        const lineCount = doc.lineCount();
+        const startIndex = Math.max(0, Math.min(lineCount - 1, startLine - 1));
+        const endIndex = Math.max(startIndex, Math.min(lineCount - 1, endLine - 1));
+
+        for (let lineIndex = startIndex; lineIndex <= endIndex; lineIndex++) {
+            const handle = markdownEditor.addLineClass(lineIndex, 'background', 'editor-source-highlight');
+            markdownEditor.addLineClass(lineIndex, 'wrap', 'editor-source-highlight-wrap');
+            activeEditorSourceLineHandles.push(handle);
+        }
+
+        markdownEditor.scrollIntoView({
+            from: { line: startIndex, ch: 0 },
+            to: { line: endIndex, ch: Math.max(0, String(doc.getLine(endIndex) || '').length) }
+        }, 80);
+        return;
+    }
+
+    if (markdownInput) {
+        const style = window.getComputedStyle(markdownInput);
+        const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.6 || 20;
+        markdownInput.scrollTop = Math.max(0, (startLine - 1) * lineHeight - markdownInput.clientHeight / 3);
+    }
 }
 
 function isElementMostlyVisibleInContainer(element, container) {
@@ -4404,15 +4469,41 @@ function getCodeMirrorLineFromMouse(cm, event) {
     return pos.line + 1;
 }
 
-function handleMarkdownEditorHoverLine(lineNumber) {
+function handleMarkdownEditorSourceClick(lineNumber) {
     const line = Number(lineNumber);
     if (!Number.isFinite(line) || line < 1) {
         clearPreviewSourceHighlight();
+        clearEditorSourceHighlight();
         return;
     }
+    clearEditorSourceHighlight();
     if (line === lastEditorHoverLine) return;
     lastEditorHoverLine = line;
     highlightPreviewSourceLine(line);
+}
+
+function bindEditorSourceHover() {
+    if (!previewContent) return;
+
+    previewContent.addEventListener('click', (event) => {
+        if (previewHoverFrame) cancelAnimationFrame(previewHoverFrame);
+        previewHoverFrame = requestAnimationFrame(() => {
+            previewHoverFrame = null;
+
+            const target = event.target && event.target.closest
+                ? event.target.closest('[data-source-block]')
+                : null;
+
+            if (!target || !previewContent.contains(target)) {
+                clearEditorSourceHighlight();
+                clearPreviewSourceHighlight();
+                return;
+            }
+
+            clearPreviewSourceHighlight();
+            highlightEditorSourceBlockFromElement(target);
+        });
+    });
 }
 
 function bindPreviewSourceHover() {
@@ -4420,42 +4511,27 @@ function bindPreviewSourceHover() {
         const wrapper = markdownEditor.getWrapperElement();
         if (!wrapper) return;
 
-        wrapper.addEventListener('mousemove', (event) => {
+        wrapper.addEventListener('click', (event) => {
             if (editorHoverFrame) cancelAnimationFrame(editorHoverFrame);
             editorHoverFrame = requestAnimationFrame(() => {
                 editorHoverFrame = null;
                 try {
-                    handleMarkdownEditorHoverLine(getCodeMirrorLineFromMouse(markdownEditor, event));
+                    handleMarkdownEditorSourceClick(getCodeMirrorLineFromMouse(markdownEditor, event));
                 } catch {
                     clearPreviewSourceHighlight();
                 }
             });
         });
-
-        wrapper.addEventListener('mouseleave', () => {
-            if (editorHoverFrame) {
-                cancelAnimationFrame(editorHoverFrame);
-                editorHoverFrame = null;
-            }
-            clearPreviewSourceHighlight();
-        });
         return;
     }
 
     if (markdownInput) {
-        markdownInput.addEventListener('mousemove', (event) => {
+        markdownInput.addEventListener('click', (event) => {
             if (editorHoverFrame) cancelAnimationFrame(editorHoverFrame);
             editorHoverFrame = requestAnimationFrame(() => {
                 editorHoverFrame = null;
-                handleMarkdownEditorHoverLine(getTextareaLineFromMouse(markdownInput, event));
+                handleMarkdownEditorSourceClick(getTextareaLineFromMouse(markdownInput, event));
             });
-        });
-        markdownInput.addEventListener('mouseleave', () => {
-            if (editorHoverFrame) {
-                cancelAnimationFrame(editorHoverFrame);
-                editorHoverFrame = null;
-            }
-            clearPreviewSourceHighlight();
         });
     }
 }
@@ -4491,6 +4567,7 @@ function bindEditorEvents() {
     // Right-click context menu for markdown editor formatting.
     bindEditorContextMenu();
     bindPreviewSourceHover();
+    bindEditorSourceHover();
 }
 
 btnDownload.addEventListener('click', downloadPDF);

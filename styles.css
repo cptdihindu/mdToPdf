@@ -473,6 +473,14 @@ body {
     color: var(--text-tertiary);
 }
 
+.editor-wrapper .CodeMirror .editor-source-highlight {
+    background: rgba(255, 214, 102, 0.18);
+}
+
+.editor-wrapper .CodeMirror .editor-source-highlight-wrap {
+    box-shadow: inset 3px 0 0 rgba(245, 158, 11, 0.9);
+}
+
 /* CodeMirror token colors (no bold emphasis) */
 .editor-wrapper .CodeMirror .cm-header,
 .editor-wrapper .CodeMirror .cm-strong {
